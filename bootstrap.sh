@@ -5,6 +5,25 @@ set -euo pipefail
 # Get the directory where this script is located
 DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Default to non-interactive mode (auto-approve removals)
+# Set to false for interactive prompts
+AUTO_APPROVE="${AUTO_APPROVE:-true}"
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -i|--interactive)
+      AUTO_APPROVE=false
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Usage: $0 [-i|--interactive]"
+      exit 1
+      ;;
+  esac
+done
+
 # Function to create symlinks with proper error handling
 create_symlink() {
   local source="$1"
@@ -42,13 +61,18 @@ create_symlink() {
       fi
     else
       echo "Warning: $destination already exists and is not a symlink"
-      read -p "Remove it and create symlink? (y/n) " -n 1 -r
-      echo
-      if [[ $REPLY =~ ^[Yy]$ ]]; then
+      if [[ "$AUTO_APPROVE" == "true" ]]; then
+        echo "Auto-approving removal (non-interactive mode)"
         rm -rf "$destination"
       else
-        echo "Skipping: $destination"
-        return 0
+        read -p "Remove it and create symlink? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+          rm -rf "$destination"
+        else
+          echo "Skipping: $destination"
+          return 0
+        fi
       fi
     fi
   fi
