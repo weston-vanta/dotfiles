@@ -84,7 +84,8 @@ HL_LAYOUT_STYLE="%{$faint%}"
 
 # Order of segments
 declare -a HL_LAYOUT_ORDER=(
-  _PRE USER HOST VENV PATH _SPACER BRANCH STATUS _POST # ...
+  _PRE VENV PATH _SPACER BRANCH STATUS _POST # ...
+#  _PRE USER HOST VENV PATH _SPACER BRANCH STATUS _POST # ...
 )
 
 # Template for each segment's layout
@@ -129,7 +130,7 @@ declare -A HL_CONTENT_SOURCE=(
   USER   'echo $USER'
   HOST   'hostname -s'
   VENV   'print ${VIRTUAL_ENV_PROMPT:-${CONDA_DEFAULT_ENV:-$(basename "$VIRTUAL_ENV")}}'
-  PATH   'print -rP "%~"'
+  PATH   'print -rP "%(5~|%-1~/.../%3~|%4~)"'
   BRANCH 'headline-git-branch'
   STATUS 'headline-git-status'
   # ...
@@ -185,7 +186,7 @@ HL_TRUNC_REMOVAL=2
 
 
 # Prompt
-HL_PROMPT='%(#.#.%(!.!.$)) ' # consider '%#'
+HL_PROMPT='%(#.#.>_) ' # consider '%#'
 
 # Right prompt
 HL_RPROMPT=''
@@ -215,7 +216,7 @@ HL_ERR_DETAIL_TEMPLATE=' (...)'
 HL_PRINT_MODE='precmd' # precmd|prompt
 
 # Print the separator line always, when not following clear screen, or don't print
-HL_SEP_MODE='auto' # on|auto|off
+HL_SEP_MODE='off' # on|auto|off
 
 # Print the information line always, when it has changed, or don't print
 HL_INFO_MODE='on' # on|auto|off
