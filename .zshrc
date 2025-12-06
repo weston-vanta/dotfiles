@@ -102,12 +102,3 @@ source $ZSH/oh-my-zsh.sh
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
-
-# Tell tmux about the current Codespace (if we're in one)
-if [ -n "$TMUX" ]; then
-  if [ -n "$CODESPACE_NAME" ]; then
-    printf '\033Ptmux; set -g @codespace_name "%s"\033\\' "$CODESPACE_NAME"
-  else
-    printf '\033Ptmux; set -g @codespace_name\033\\'
-  fi
-fi
