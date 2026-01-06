@@ -1,0 +1,41 @@
+#!/bin/bash
+
+# List open GitHub PRs where weston-vanta is a reviewer
+# Usage: prs [team-name]
+#   team-name: optional filter to show only PRs from authors in that team
+
+set -e
+
+ORG="VantaInc"
+TEAM="$1"
+TEMPLATE=$(
+  cat <<'EOF'
+{{range .}}
+{{autocolor "white+b" .title}} {{autocolor "yellow+d" (printf "(%v)" .number)}}
+{{"by"}} {{autocolor "green+b" .author.login}}
+{{autocolor "blue+ud" (hyperlink .url .url)}}
+{{end}}
+EOF
+)
+
+if [[ -n "$TEAM" ]]; then
+  # Get team members
+  MEMBERS=$(gh api "orgs/$ORG/teams/$TEAM/members" --jq '.[].login' 2>/dev/null)
+  if [[ -z "$MEMBERS" ]]; then
+    echo "Error: Could not fetch members for team '$TEAM'" >&2
+    exit 1
+  fi
+
+  # Build author filter for search query
+  AUTHOR_FILTER=$(printf "author:%s OR " $MEMBERS | sed 's/ OR $//')
+
+  echo "Filtering: $AUTHOR_FILTER"
+
+  gh search prs --state=open --review-requested="$GITHUB_USER" $AUTHOR_FILTER \
+    --json number,title,author,repository,url \
+    --template "$TEMPLATE"
+else
+  gh search prs --state=open --review-requested="$GITHUB_USER" \
+    --json number,title,author,repository,url \
+    --template "$TEMPLATE"
+fi

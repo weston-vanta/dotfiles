@@ -94,6 +94,16 @@ for config_dir in "$DOTFILES_DIR/.config"/*; do
 done
 
 echo
+echo "==> Symlinking scripts to ~/.local/bin"
+mkdir -p "$HOME/.local/bin"
+for script in "$DOTFILES_DIR/bin"/*; do
+  if [[ -f "$script" && -x "$script" ]]; then
+    script_name="$(basename "$script")"
+    create_symlink "$script" "$HOME/.local/bin/$script_name"
+  fi
+done
+
+echo
 echo "==> Symlinking root dotfiles"
 create_symlink ".gitconfig" "$HOME/.gitconfig"
 create_symlink ".oh-my-zsh" "$HOME/.oh-my-zsh"
