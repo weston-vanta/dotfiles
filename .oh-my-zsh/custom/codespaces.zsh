@@ -1,9 +1,9 @@
-# Codespace management functions
+# GitHub Codespace management functions
 # These are automatically loaded by oh-my-zsh on shell startup
 
 # Main cs command with subcommands
 cs() {
-  local subcommand="${1}"
+  local subcommand="$1"
   shift
 
   case "$subcommand" in
@@ -37,16 +37,15 @@ _cs_list() {
 # SSH into a codespace with proper environment setup
 # Usage: cs ssh [codespace-name]
 _cs_ssh() {
-  local codespace_display_name="${1}"
+  local codespace_display_name="$1"
 
-  # If no name provided, get list and use fzf for selection (if available)
-  if [ -z "$codespace_display_name" ]; then
+  if [[ -z "$codespace_display_name" ]]; then
     if command -v fzf &> /dev/null; then
       codespace_display_name=$(cs list | fzf --prompt="Select Codespace: " | awk '{print $1;}')
-      [ -z "$codespace_display_name" ] && return 1
+      [[ -z "$codespace_display_name" ]] && return 1
     else
       echo "Please provide a codespace name, or install fzf for interactive selection"
-      echo "Usage: cs pane <codespace-name>"
+      echo "Usage: cs ssh <codespace-name>"
       echo ""
       echo "Available codespaces:"
       _cs_list
@@ -59,21 +58,17 @@ _cs_ssh() {
 
   echo "Connecting to $codespace_name..."
 
-  if [ -n "$TMUX" ]; then
-    tmux set-option -p @codespace_name "$codespace_display_name"
-  fi
+  [[ -n "$TMUX" ]] && tmux set-option -p @codespace_name "$codespace_display_name"
 
   gh cs ssh -c "$codespace_name"
-  
-  if [ -n "$TMUX" ]; then
-    tmux set-option -pu @codespace_name
-  fi
+
+  [[ -n "$TMUX" ]] && tmux set-option -pu @codespace_name
 }
 
 # Open a new tmux pane and SSH into a codespace
 # Usage: cs pane [-h|-v] [codespace-name]
 _cs_pane() {
-  local split_direction="v"  # Default to vertical
+  local split_direction="v"
   local codespace_name=""
 
   while [[ $# -gt 0 ]]; do
@@ -93,8 +88,6 @@ _cs_pane() {
     esac
   done
 
-  # Split pane and connect
-  # Use zsh -i -c to ensure functions are loaded in the new pane
   tmux split-window -$split_direction "zsh -i -c 'cs ssh $codespace_name'"
 }
 
@@ -103,18 +96,19 @@ _cs_help() {
   cat <<EOF
 Usage: cs <subcommand> [options]
 
-Manage GitHub Codespaces from tmux
+Manage GitHub Codespaces with tmux niceties
 
 Subcommands:
   list, ls              List all running Codespaces
   ssh [name]            SSH into a Codespace (interactive if no name provided)
   pane [-h|-v] [name]   Open a new tmux pane connected to a Codespace
-                        -h: horizontal split (default)
-                        -v: vertical split
+                        -h: horizontal split
+                        -v: vertical split (default)
   help                  Show this help message
 
 Examples:
   cs list                          # List all running Codespaces
+  cs ssh                           # Interactively choose a Codespace to SSH into
   cs ssh my-codespace              # SSH into a specific Codespace
   cs pane                          # Open new pane with interactive selection (requires fzf)
   cs pane my-codespace             # Open new pane connected to specific Codespace

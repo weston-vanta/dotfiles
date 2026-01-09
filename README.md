@@ -25,3 +25,9 @@ cd ~/dotfiles
 ```
 
 The bootstrap script creates symlinks from this repository to your home directory for all configuration files.
+
+## Custom zsh functions
+
+- `cs` -- interact with GitHub Codespaces (`cs help` for usage).
+- `prs` -- view and open PRs in Codespaces (`prs help` for usage).
+- `ona` -- interact with Ona environments (`ona help` for usage).
