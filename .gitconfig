@@ -1,3 +1,5 @@
 [user]
 	name = Weston Fribley
 	email = weston.fribley@vanta.com
+[fetch]
+	prune = true
