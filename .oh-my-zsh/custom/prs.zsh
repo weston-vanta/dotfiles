@@ -7,7 +7,7 @@ prs() {
 
   # If no argument or argument doesn't match known subcommands, treat as list
   case "$subcommand" in
-    list|open|help|--help|-h)
+    list|open|view|help|--help|-h)
       shift
       ;;
     "")
@@ -25,6 +25,9 @@ prs() {
       ;;
     open)
       _prs_open "$@"
+      ;;
+    view)
+      _prs_view "$@"
       ;;
     help|--help|-h)
       _prs_help
