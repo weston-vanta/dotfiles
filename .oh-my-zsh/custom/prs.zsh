@@ -3,36 +3,54 @@
 
 # Main prs command with subcommands
 prs() {
-  local subcommand="${1}"
+  local subcommand="$1"
 
-  # If no argument or argument doesn't match known subcommands, treat as list
   case "$subcommand" in
-    list|open|view|help|--help|-h)
+    list|open|view)
       shift
-      ;;
-    "")
-      subcommand="list"
-      ;;
-    *)
-      # Unknown arg - treat as list with team filter for backward compatibility
-      subcommand="list"
-      ;;
-  esac
-
-  case "$subcommand" in
-    list)
-      _prs_list "$@"
-      ;;
-    open)
-      _prs_open "$@"
-      ;;
-    view)
-      _prs_view "$@"
+      "_prs_$subcommand" "$@"
       ;;
     help|--help|-h)
       _prs_help
       ;;
+    "")
+      _prs_list
+      ;;
+    *)
+      # Unknown arg - treat as list with team filter for backward compatibility
+      _prs_list "$@"
+      ;;
   esac
+}
+
+# Interactively select a PR using fzf
+# Usage: _prs_select_fzf <prompt> [team-name]
+#   Prints the selected PR number to stdout, or returns 1 if none selected
+_prs_select_fzf() {
+  local prompt="$1"
+  local team="$2"
+
+  command -v fzf &> /dev/null || {
+    echo "Error: Please provide a PR number, or install fzf for interactive selection" >&2
+    return 1
+  }
+
+  echo "Fetching PRs..." >&2
+  local fzf_template='{{range .}}{{.number}}	{{.title}} (by {{.author.login}})
+{{end}}'
+  local pr_list=$(_prs_list "$team" "$fzf_template")
+
+  [[ -z "$pr_list" ]] && { echo "No open PRs found" >&2; return 1; }
+
+  local selection=$(echo "$pr_list" | fzf --prompt="$prompt" --delimiter="\t" --with-nth=2)
+  [[ -z "$selection" ]] && { echo "No PR selected" >&2; return 1; }
+
+  echo "$selection" | cut -f1
+}
+
+# Print a horizontal separator line
+_prs_separator() {
+  echo "  \033[2m$(printf '%.0s─' {1..60})\033[0m"
 }
 
 # List open GitHub PRs where the current user is a reviewer
@@ -48,7 +66,6 @@ _prs_list() {
   local all_prs=false
   local template=""
 
-  # Parse arguments
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --all)
@@ -56,7 +73,6 @@ _prs_list() {
         shift
         ;;
       *)
-        # First non-flag arg is team, second is template
         if [[ -z "$team" ]]; then
           team="$1"
         elif [[ -z "$template" ]]; then
@@ -67,7 +83,6 @@ _prs_list() {
     esac
   done
 
-  # Set default template if not provided
   [[ -z "$template" ]] && template=$(cat <<'EOF'
 {{range .}}
 {{autocolor "white+b" (hyperlink .url (truncate 100 .title))}} {{autocolor "yellow+d" (printf "(#%v)" .number)}}
@@ -101,119 +116,49 @@ EOF
     --template "$template"
 }
 
-# Open a PR in a GitHub Codespace
-# Usage: prs open [team-name] [--dry-run] [pr-number]
+# Switch to a PR branch and save PR context file
+# Usage: prs open [team-name] [pr-number]
 #   team-name: optional filter for interactive selection (use "mine" for your authored PRs)
-#   --dry-run: print commands instead of executing them
-#   pr-number: optional PR number to open directly (ignores team filter, uses fzf if not provided)
+#   pr-number: optional PR number to open directly (uses fzf if not provided)
 _prs_open() {
-  local org="VantaInc"
-  local repo="$org/obsidian"
-  local dry_run=false
   local pr_number=""
   local team=""
 
-  # Parse arguments
   while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --dry-run)
-        dry_run=true
-        shift
-        ;;
-      *)
-        # If it's a number, treat as PR number, otherwise treat as team
-        if [[ "$1" =~ ^[0-9]+$ ]]; then
-          pr_number="$1"
-        else
-          team="$1"
-        fi
-        shift
-        ;;
-    esac
+    if [[ "$1" =~ ^[0-9]+$ ]]; then
+      pr_number="$1"
+    else
+      team="$1"
+    fi
+    shift
   done
 
-  # Check for required commands
-  command -v gh &> /dev/null || { echo "Error: GitHub CLI (gh) not found. Install from https://cli.github.com" >&2; return 1; }
+  command -v gh &> /dev/null || { echo "Error: GitHub CLI (gh) not found" >&2; return 1; }
 
-  # If no PR number provided, use fzf for interactive selection
   if [[ -z "$pr_number" ]]; then
-    command -v fzf &> /dev/null || { echo "Error: Please provide a PR number, or install fzf for interactive selection\nUsage: prs open <pr-number>" >&2; return 1; }
-
-    echo "Fetching PRs..."
-    local fzf_template='{{range .}}{{.number}}	{{.title}} (by {{.author.login}})
-{{end}}'
-    local pr_list=$(_prs_list "$team" "$fzf_template")
-
-    [[ -z "$pr_list" ]] && echo "No open PRs found" >&2 && return 1
-
-    local selection=$(echo "$pr_list" | fzf --prompt="Select PR: " --delimiter="\t" --with-nth=2)
-    [[ -z "$selection" ]] && echo "No PR selected" >&2 && return 1
-
-    pr_number=$(echo "$selection" | cut -f1)
+    pr_number=$(_prs_select_fzf "Select PR to open: " "$team") || return 1
   fi
 
-  # Fetch PR details
-  echo "Fetching PR $pr_number..."
-  local pr_data=$(gh pr view "$pr_number" --repo "$repo" --json headRefName,author,title 2>&1) || {
-    echo "Error: PR #$pr_number not found or not accessible" >&2
-    echo "$pr_data" >&2
+  # Fetch branch name
+  local branch
+  branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName' 2>&1) || {
+    echo "Error: Could not fetch PR #$pr_number" >&2
+    echo "$branch" >&2
     return 1
   }
 
-  echo "$pr_data"
+  # Fetch and switch to branch
+  git fetch origin "$branch" || { echo "Error: Failed to fetch branch '$branch'" >&2; return 1; }
 
-  local branch=$(echo "$pr_data" | jq -r '.headRefName')
-  local author=$(echo "$pr_data" | jq -r '.author.login')
-  local title=$(echo "$pr_data" | jq -r '.title')
-
-  [[ -n "$branch" && -n "$author" && -n "$title" ]] || { echo "Error: Failed to fetch required PR details" >&2; return 1; }
-
-  local codespace_name="[$pr_number] $author"
-
-  # Check if codespace already exists
-  echo "Fetching codespaces..."
-  local codespaces_json=$(gh cs list --json name,displayName,state 2>/dev/null)
-  local existing_codespace=$(echo "$codespaces_json" | jq -r --arg name "$codespace_name" 'first(.[] | select(.displayName == $name)) | .name')
-
-  if [[ -n "$existing_codespace" ]]; then
-    echo "Found existing codespace $codespace_name, opening in VS Code..."
-    gh cs code -c "$existing_codespace"
-    return $?
-  fi
-
-  # Clean up stopped PR codespaces
-  echo "Cleaning up stopped PR codespaces..."
-  local stopped_prs=$(echo "$codespaces_json" | jq -r '.[] | select(.displayName | startswith("[PR] ")) | select(.state == "Stopped") | .name')
-
-  if [[ -n "$stopped_prs" ]]; then
-    local -a stopped_array=("${(@f)stopped_prs}")
-    echo "Deleting ${#stopped_array[@]} stopped PR codespace(s)..."
-    local current=1
-    for cs_name in "${stopped_array[@]}"; do
-      echo "  Deleting ($current/${#stopped_array[@]}): $cs_name"
-      [[ "$dry_run" == "true" ]] && echo "    [DRY RUN] gh cs delete -c \"$cs_name\" --force" || gh cs delete -c "$cs_name" --force 2>&1 | grep -v "^$" || true
-      ((current++))
-    done
-  fi
-
-  # Create new codespace
-  echo "Creating new codespace for PR $pr_number..."
-  echo "  Repository: $repo\n  Branch: $branch\n  Name: $codespace_name"
-
-  if [[ "$dry_run" == "true" ]]; then
-    echo "[DRY RUN] gh cs create --repo \"$repo\" --branch \"$branch\" --display-name \"$codespace_name\""
-    echo "[DRY RUN] gh cs code -c \"<codespace name>\""
-    return
-  fi
-
-  gh cs create --repo "$repo" --branch "$branch" --display-name "$codespace_name" || {
-    echo "Error: Failed to create codespace. Check the error above." >&2
+  git switch "$branch" || {
+    echo "Error: Failed to switch to '$branch'. Stash or commit changes first." >&2
     return 1
   }
 
-  echo "Codespace created and opening in VS Code..."
-  local codespace_id=$(gh cs list --json name,displayName | jq -r --arg name "$codespace_name" 'map(select(.displayName == $name)) | .[0].name')
-  gh cs code -c "$codespace_id"
+  # Save PR context
+  local context_file="PR_CONTEXT.md"
+  prs view "$pr_number" | sed $'s/\033\[[0-9;]*m//g' > "$context_file"
+  echo "Switched to '$branch' — PR context saved to $context_file"
 }
 
 # View PR details: title, description, and unresolved review threads
@@ -226,21 +171,15 @@ _prs_view() {
   local pr_number=""
   local team=""
 
-  # Parse arguments
   while [[ $# -gt 0 ]]; do
-    case "$1" in
-      *)
-        if [[ "$1" =~ ^[0-9]+$ ]]; then
-          pr_number="$1"
-        else
-          team="$1"
-        fi
-        shift
-        ;;
-    esac
+    if [[ "$1" =~ ^[0-9]+$ ]]; then
+      pr_number="$1"
+    else
+      team="$1"
+    fi
+    shift
   done
 
-  # Check for required commands
   command -v gh &> /dev/null || { echo "Error: GitHub CLI (gh) not found. Install from https://cli.github.com" >&2; return 1; }
   command -v jq &> /dev/null || { echo "Error: jq not found. Install with: brew install jq" >&2; return 1; }
   command -v glow &> /dev/null || { echo "Error: glow not found. Install with: brew install glow" >&2; return 1; }
@@ -248,24 +187,10 @@ _prs_view() {
   # Default team to "mine" when no arguments provided
   [[ -z "$team" && -z "$pr_number" ]] && team="mine"
 
-  # If no PR number provided, use fzf for interactive selection
   if [[ -z "$pr_number" ]]; then
-    command -v fzf &> /dev/null || { echo "Error: Please provide a PR number, or install fzf for interactive selection\nUsage: prs view <pr-number>" >&2; return 1; }
-
-    echo "Fetching PRs..."
-    local fzf_template='{{range .}}{{.number}}	{{.title}} (by {{.author.login}})
-{{end}}'
-    local pr_list=$(_prs_list "$team" "$fzf_template")
-
-    [[ -z "$pr_list" ]] && echo "No open PRs found" >&2 && return 1
-
-    local selection=$(echo "$pr_list" | fzf --prompt="Select PR to view: " --delimiter="\t" --with-nth=2)
-    [[ -z "$selection" ]] && echo "No PR selected" >&2 && return 1
-
-    pr_number=$(echo "$selection" | cut -f1)
+    pr_number=$(_prs_select_fzf "Select PR to view: " "$team") || return 1
   fi
 
-  # Fetch and render PR data
   _prs_view_render "$org" "$repo" "$pr_number"
 }
 
@@ -328,7 +253,6 @@ query($owner: String!, $repo: String!, $pr: Int!) {
 _prs_view_display() {
   local pr_json="$1"
 
-  # Extract metadata
   local title=$(jq -r '.title' <<< "$pr_json")
   local number=$(jq -r '.number' <<< "$pr_json")
   local state=$(jq -r '.state' <<< "$pr_json")
@@ -372,7 +296,7 @@ _prs_view_display() {
   echo "  ${bold_white}${title}${reset} ${yellow}(#${number})${reset}  ${state_color}${state}${reset}"
   echo "  ${cyan}${author}:${head_ref}${reset} ${dim}->${reset} ${cyan}${base_ref}${reset}  ${decision_color}${review_decision}${reset}"
   echo "  ${dim}${url}${reset}"
-  echo "  ${dim}$(printf '%.0s─' {1..60})${reset}"
+  _prs_separator
 
   # --- Body ---
   if [[ -n "$body" ]]; then
@@ -387,7 +311,7 @@ _prs_view_display() {
   local threads_json=$(jq '[.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false)]' <<< "$pr_json")
   local thread_count=$(jq 'length' <<< "$threads_json")
 
-  echo "  ${dim}$(printf '%.0s─' {1..60})${reset}"
+  _prs_separator
 
   if [[ "$thread_count" -eq 0 ]]; then
     echo "  ${green}No unresolved threads${reset}"
@@ -396,9 +320,8 @@ _prs_view_display() {
   fi
 
   echo "  ${bold}Unresolved Threads (${thread_count})${reset}"
-  echo "  ${dim}$(printf '%.0s─' {1..60})${reset}"
+  _prs_separator
 
-  # Iterate threads
   jq -c '.[]' <<< "$threads_json" | while IFS= read -r thread; do
     local file_path=$(jq -r '.path' <<< "$thread")
     local line_num=$(jq -r '.line // ""' <<< "$thread")
@@ -456,10 +379,9 @@ Subcommands:
                         team-name: optional filter to show only PRs from authors in that team
                                    use "mine" to show PRs you authored
                         --all: show all PRs from team (without filtering by review-requested)
-  open [team-name] [--dry-run] [pr-number]
-                        Open a PR in a GitHub Codespace
+  open [team-name] [pr-number]
+                        Switch to a PR branch and save context file (PR_CONTEXT.md)
                         team-name: optional filter for interactive selection (use "mine" for your authored PRs)
-                        --dry-run: print commands instead of executing them
                         pr-number: optional PR number (uses fzf for interactive selection if not provided)
   view [team-name] [pr-number]
                         View PR details: title, description, and unresolved threads
@@ -473,18 +395,15 @@ Examples:
   prs backend-team --all        # List all PRs from backend-team members
   prs list mine                 # List your authored PRs
   prs list                      # Explicitly list PRs
-  prs open                      # Interactively select a PR to open (requires fzf)
+  prs open                      # Interactively select a PR to check out (requires fzf)
   prs open mine                 # Interactively select from your authored PRs
-  prs open 1234                 # Open PR #1234 in a codespace
-  prs open --dry-run 1234       # Preview commands for opening PR #1234 without executing
-  prs view 1234                   # View PR #1234 details and unresolved threads
-  prs view                        # Interactively select from your PRs to view
-  prs view backend-team           # Interactively select from backend-team's PRs to view
+  prs open 1234                 # Switch to PR #1234's branch and save context
+  prs view 1234                 # View PR #1234 details and unresolved threads
+  prs view                      # Interactively select from your PRs to view
+  prs view backend-team         # Interactively select from backend-team's PRs to view
 
 Notes:
-  - PR codespaces are named: [PR] <author>: <title>
-  - Existing codespaces are reused when available
-  - Stopped PR codespaces are cleaned up automatically before creating new ones
+  - prs open saves PR context to PR_CONTEXT.md in the repo root (add to .gitignore)
   - Requires: gh CLI, fzf (for interactive selection)
   - prs view requires: gh CLI, jq, glow, fzf (for interactive selection)
 EOF
