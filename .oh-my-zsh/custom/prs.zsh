@@ -271,7 +271,58 @@ _prs_view() {
 
 _prs_view_render() {
   local org="$1" repo="$2" pr_number="$3"
-  echo "TODO: render PR #$pr_number"
+
+  echo "Fetching PR #$pr_number..."
+
+  local query='
+query($owner: String!, $repo: String!, $pr: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      title
+      body
+      number
+      url
+      state
+      reviewDecision
+      author { login }
+      baseRefName
+      headRefName
+      reviewThreads(first: 100) {
+        nodes {
+          isResolved
+          isOutdated
+          path
+          line
+          comments(first: 50) {
+            nodes {
+              author { login }
+              body
+              createdAt
+              diffHunk
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+
+  local result
+  result=$(gh api graphql \
+    -f query="$query" \
+    -f owner="$org" \
+    -f repo="${repo#*/}" \
+    -F pr="$pr_number" 2>&1) || {
+    echo "Error: Failed to fetch PR #$pr_number" >&2
+    echo "$result" >&2
+    return 1
+  }
+
+  local pr_json=$(echo "$result" | jq '.data.repository.pullRequest')
+
+  [[ "$pr_json" == "null" ]] && { echo "Error: PR #$pr_number not found" >&2; return 1; }
+
+  _prs_view_display "$pr_json"
 }
 
 # Show help message
