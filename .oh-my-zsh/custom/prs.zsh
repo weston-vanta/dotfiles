@@ -325,6 +325,124 @@ query($owner: String!, $repo: String!, $pr: Int!) {
   _prs_view_display "$pr_json"
 }
 
+_prs_view_display() {
+  local pr_json="$1"
+
+  # Extract metadata
+  local title=$(echo "$pr_json" | jq -r '.title')
+  local number=$(echo "$pr_json" | jq -r '.number')
+  local state=$(echo "$pr_json" | jq -r '.state')
+  local review_decision=$(echo "$pr_json" | jq -r '.reviewDecision // "PENDING"')
+  local author=$(echo "$pr_json" | jq -r '.author.login')
+  local head_ref=$(echo "$pr_json" | jq -r '.headRefName')
+  local base_ref=$(echo "$pr_json" | jq -r '.baseRefName')
+  local url=$(echo "$pr_json" | jq -r '.url')
+  local body=$(echo "$pr_json" | jq -r '.body // ""')
+
+  # Color codes
+  local reset='\033[0m'
+  local bold_white='\033[1;37m'
+  local yellow='\033[0;33m'
+  local green='\033[0;32m'
+  local red='\033[0;31m'
+  local magenta='\033[0;35m'
+  local cyan='\033[0;36m'
+  local dim='\033[2m'
+  local bold='\033[1m'
+
+  # State color
+  local state_color
+  case "$state" in
+    OPEN)   state_color="$green" ;;
+    MERGED) state_color="$magenta" ;;
+    CLOSED) state_color="$red" ;;
+    *)      state_color="$reset" ;;
+  esac
+
+  # Review decision color
+  local decision_color
+  case "$review_decision" in
+    APPROVED)          decision_color="$green" ;;
+    CHANGES_REQUESTED) decision_color="$red" ;;
+    *)                 decision_color="$yellow" ;;
+  esac
+
+  # --- Header ---
+  echo ""
+  echo "  ${bold_white}${title}${reset} ${yellow}(#${number})${reset}  ${state_color}${state}${reset}"
+  echo "  ${cyan}${author}:${head_ref}${reset} ${dim}->${reset} ${cyan}${base_ref}${reset}  ${decision_color}${review_decision}${reset}"
+  echo "  ${dim}${url}${reset}"
+  echo "  ${dim}$(printf '%.0s─' {1..60})${reset}"
+
+  # --- Body ---
+  if [[ -n "$body" ]]; then
+    echo ""
+    echo "$body" | glow -s dark -w 80
+    echo ""
+  else
+    echo "\n  ${dim}No description provided.${reset}\n"
+  fi
+
+  # --- Unresolved Threads ---
+  local threads_json=$(echo "$pr_json" | jq '[.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false)]')
+  local thread_count=$(echo "$threads_json" | jq 'length')
+
+  echo "  ${dim}$(printf '%.0s─' {1..60})${reset}"
+
+  if [[ "$thread_count" -eq 0 ]]; then
+    echo "  ${green}No unresolved threads${reset}"
+    echo ""
+    return
+  fi
+
+  echo "  ${bold}Unresolved Threads (${thread_count})${reset}"
+  echo "  ${dim}$(printf '%.0s─' {1..60})${reset}"
+
+  # Iterate threads
+  echo "$threads_json" | jq -c '.[]' | while IFS= read -r thread; do
+    local path=$(echo "$thread" | jq -r '.path')
+    local line_num=$(echo "$thread" | jq -r '.line // ""')
+
+    echo ""
+    if [[ -n "$line_num" && "$line_num" != "null" ]]; then
+      echo "  ${bold_white}${path}:${line_num}${reset}"
+    else
+      echo "  ${bold_white}${path}${reset}"
+    fi
+
+    # Show diff hunk from first comment (all comments in a thread share the same hunk)
+    local diff_hunk=$(echo "$thread" | jq -r '.comments.nodes[0].diffHunk // ""')
+    if [[ -n "$diff_hunk" ]]; then
+      echo "  ${dim}┌──${reset}"
+      echo "$diff_hunk" | while IFS= read -r hunk_line; do
+        local hunk_color="$reset"
+        case "$hunk_line" in
+          +*) hunk_color="$green" ;;
+          -*) hunk_color="$red" ;;
+          @@*) hunk_color="$cyan" ;;
+        esac
+        echo "  ${dim}│${reset} ${hunk_color}${hunk_line}${reset}"
+      done
+      echo "  ${dim}└──${reset}"
+    fi
+
+    # Show comments
+    echo "$thread" | jq -c '.comments.nodes[]' | while IFS= read -r comment; do
+      local comment_author=$(echo "$comment" | jq -r '.author.login')
+      local comment_body=$(echo "$comment" | jq -r '.body')
+      local comment_date=$(echo "$comment" | jq -r '.createdAt')
+
+      echo ""
+      echo "  ${bold}${comment_author}${reset} ${dim}${comment_date}${reset}"
+      echo "$comment_body" | glow -s dark -w 76 | while IFS= read -r rendered_line; do
+        echo "  ${rendered_line}"
+      done
+    done
+  done
+
+  echo ""
+}
+
 # Show help message
 _prs_help() {
   cat <<EOF
