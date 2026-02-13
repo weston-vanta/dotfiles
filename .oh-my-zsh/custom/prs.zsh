@@ -400,14 +400,14 @@ _prs_view_display() {
 
   # Iterate threads
   jq -c '.[]' <<< "$threads_json" | while IFS= read -r thread; do
-    local path=$(jq -r '.path' <<< "$thread")
+    local file_path=$(jq -r '.path' <<< "$thread")
     local line_num=$(jq -r '.line // ""' <<< "$thread")
 
     echo ""
     if [[ -n "$line_num" && "$line_num" != "null" ]]; then
-      echo "  ${bold_white}${path}:${line_num}${reset}"
+      echo "  ${bold_white}${file_path}:${line_num}${reset}"
     else
-      echo "  ${bold_white}${path}${reset}"
+      echo "  ${bold_white}${file_path}${reset}"
     fi
 
     # Show diff hunk from first comment (all comments in a thread share the same hunk)
