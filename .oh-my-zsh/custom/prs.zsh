@@ -318,7 +318,7 @@ query($owner: String!, $repo: String!, $pr: Int!) {
     return 1
   }
 
-  local pr_json=$(echo "$result" | jq '.data.repository.pullRequest')
+  local pr_json=$(jq '.data.repository.pullRequest' <<< "$result")
 
   [[ "$pr_json" == "null" ]] && { echo "Error: PR #$pr_number not found" >&2; return 1; }
 
@@ -329,15 +329,15 @@ _prs_view_display() {
   local pr_json="$1"
 
   # Extract metadata
-  local title=$(echo "$pr_json" | jq -r '.title')
-  local number=$(echo "$pr_json" | jq -r '.number')
-  local state=$(echo "$pr_json" | jq -r '.state')
-  local review_decision=$(echo "$pr_json" | jq -r '.reviewDecision // "PENDING"')
-  local author=$(echo "$pr_json" | jq -r '.author.login')
-  local head_ref=$(echo "$pr_json" | jq -r '.headRefName')
-  local base_ref=$(echo "$pr_json" | jq -r '.baseRefName')
-  local url=$(echo "$pr_json" | jq -r '.url')
-  local body=$(echo "$pr_json" | jq -r '.body // ""')
+  local title=$(jq -r '.title' <<< "$pr_json")
+  local number=$(jq -r '.number' <<< "$pr_json")
+  local state=$(jq -r '.state' <<< "$pr_json")
+  local review_decision=$(jq -r '.reviewDecision // "PENDING"' <<< "$pr_json")
+  local author=$(jq -r '.author.login' <<< "$pr_json")
+  local head_ref=$(jq -r '.headRefName' <<< "$pr_json")
+  local base_ref=$(jq -r '.baseRefName' <<< "$pr_json")
+  local url=$(jq -r '.url' <<< "$pr_json")
+  local body=$(jq -r '.body // ""' <<< "$pr_json")
 
   # Color codes
   local reset='\033[0m'
@@ -377,15 +377,15 @@ _prs_view_display() {
   # --- Body ---
   if [[ -n "$body" ]]; then
     echo ""
-    echo "$body" | glow -s dark -w 80
+    printf '%s\n' "$body" | glow -s dark -w 80
     echo ""
   else
     echo "\n  ${dim}No description provided.${reset}\n"
   fi
 
   # --- Unresolved Threads ---
-  local threads_json=$(echo "$pr_json" | jq '[.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false)]')
-  local thread_count=$(echo "$threads_json" | jq 'length')
+  local threads_json=$(jq '[.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false)]' <<< "$pr_json")
+  local thread_count=$(jq 'length' <<< "$threads_json")
 
   echo "  ${dim}$(printf '%.0s─' {1..60})${reset}"
 
@@ -399,9 +399,9 @@ _prs_view_display() {
   echo "  ${dim}$(printf '%.0s─' {1..60})${reset}"
 
   # Iterate threads
-  echo "$threads_json" | jq -c '.[]' | while IFS= read -r thread; do
-    local path=$(echo "$thread" | jq -r '.path')
-    local line_num=$(echo "$thread" | jq -r '.line // ""')
+  jq -c '.[]' <<< "$threads_json" | while IFS= read -r thread; do
+    local path=$(jq -r '.path' <<< "$thread")
+    local line_num=$(jq -r '.line // ""' <<< "$thread")
 
     echo ""
     if [[ -n "$line_num" && "$line_num" != "null" ]]; then
@@ -411,10 +411,10 @@ _prs_view_display() {
     fi
 
     # Show diff hunk from first comment (all comments in a thread share the same hunk)
-    local diff_hunk=$(echo "$thread" | jq -r '.comments.nodes[0].diffHunk // ""')
+    local diff_hunk=$(jq -r '.comments.nodes[0].diffHunk // ""' <<< "$thread")
     if [[ -n "$diff_hunk" ]]; then
       echo "  ${dim}┌──${reset}"
-      echo "$diff_hunk" | while IFS= read -r hunk_line; do
+      printf '%s\n' "$diff_hunk" | while IFS= read -r hunk_line; do
         local hunk_color="$reset"
         case "$hunk_line" in
           +*) hunk_color="$green" ;;
@@ -427,14 +427,14 @@ _prs_view_display() {
     fi
 
     # Show comments
-    echo "$thread" | jq -c '.comments.nodes[]' | while IFS= read -r comment; do
-      local comment_author=$(echo "$comment" | jq -r '.author.login')
-      local comment_body=$(echo "$comment" | jq -r '.body')
-      local comment_date=$(echo "$comment" | jq -r '.createdAt')
+    jq -c '.comments.nodes[]' <<< "$thread" | while IFS= read -r comment; do
+      local comment_author=$(jq -r '.author.login' <<< "$comment")
+      local comment_body=$(jq -r '.body' <<< "$comment")
+      local comment_date=$(jq -r '.createdAt' <<< "$comment")
 
       echo ""
       echo "  ${bold}${comment_author}${reset} ${dim}${comment_date}${reset}"
-      echo "$comment_body" | glow -s dark -w 76 | while IFS= read -r rendered_line; do
+      printf '%s\n' "$comment_body" | glow -s dark -w 76 | while IFS= read -r rendered_line; do
         echo "  ${rendered_line}"
       done
     done
