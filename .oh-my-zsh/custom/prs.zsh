@@ -461,6 +461,10 @@ Subcommands:
                         team-name: optional filter for interactive selection (use "mine" for your authored PRs)
                         --dry-run: print commands instead of executing them
                         pr-number: optional PR number (uses fzf for interactive selection if not provided)
+  view [team-name] [pr-number]
+                        View PR details: title, description, and unresolved threads
+                        team-name: optional filter for interactive selection (default: "mine")
+                        pr-number: optional PR number (uses fzf for interactive selection if not provided)
   help                  Show this help message
 
 Examples:
@@ -473,11 +477,15 @@ Examples:
   prs open mine                 # Interactively select from your authored PRs
   prs open 1234                 # Open PR #1234 in a codespace
   prs open --dry-run 1234       # Preview commands for opening PR #1234 without executing
+  prs view 1234                   # View PR #1234 details and unresolved threads
+  prs view                        # Interactively select from your PRs to view
+  prs view backend-team           # Interactively select from backend-team's PRs to view
 
 Notes:
   - PR codespaces are named: [PR] <author>: <title>
   - Existing codespaces are reused when available
   - Stopped PR codespaces are cleaned up automatically before creating new ones
   - Requires: gh CLI, fzf (for interactive selection)
+  - prs view requires: gh CLI, jq, glow, fzf (for interactive selection)
 EOF
 }
