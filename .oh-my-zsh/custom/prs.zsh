@@ -216,6 +216,64 @@ _prs_open() {
   gh cs code -c "$codespace_id"
 }
 
+# View PR details: title, description, and unresolved review threads
+# Usage: prs view [team-name] [pr-number]
+#   team-name: optional filter for interactive selection (default: "mine" for your authored PRs)
+#   pr-number: optional PR number to view directly (uses fzf if not provided)
+_prs_view() {
+  local org="VantaInc"
+  local repo="$org/obsidian"
+  local pr_number=""
+  local team=""
+
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      *)
+        if [[ "$1" =~ ^[0-9]+$ ]]; then
+          pr_number="$1"
+        else
+          team="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  # Check for required commands
+  command -v gh &> /dev/null || { echo "Error: GitHub CLI (gh) not found. Install from https://cli.github.com" >&2; return 1; }
+  command -v jq &> /dev/null || { echo "Error: jq not found. Install with: brew install jq" >&2; return 1; }
+  command -v glow &> /dev/null || { echo "Error: glow not found. Install with: brew install glow" >&2; return 1; }
+
+  # Default team to "mine" when no arguments provided
+  [[ -z "$team" && -z "$pr_number" ]] && team="mine"
+
+  # If no PR number provided, use fzf for interactive selection
+  if [[ -z "$pr_number" ]]; then
+    command -v fzf &> /dev/null || { echo "Error: Please provide a PR number, or install fzf for interactive selection\nUsage: prs view <pr-number>" >&2; return 1; }
+
+    echo "Fetching PRs..."
+    local fzf_template='{{range .}}{{.number}}	{{.title}} (by {{.author.login}})
+{{end}}'
+    local pr_list=$(_prs_list "$team" "$fzf_template")
+
+    [[ -z "$pr_list" ]] && echo "No open PRs found" >&2 && return 1
+
+    local selection=$(echo "$pr_list" | fzf --prompt="Select PR to view: " --delimiter="\t" --with-nth=2)
+    [[ -z "$selection" ]] && echo "No PR selected" >&2 && return 1
+
+    pr_number=$(echo "$selection" | cut -f1)
+  fi
+
+  # Fetch and render PR data
+  _prs_view_render "$org" "$repo" "$pr_number"
+}
+
+_prs_view_render() {
+  local org="$1" repo="$2" pr_number="$3"
+  echo "TODO: render PR #$pr_number"
+}
+
 # Show help message
 _prs_help() {
   cat <<EOF
