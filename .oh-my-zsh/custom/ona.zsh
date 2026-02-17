@@ -115,7 +115,7 @@ _ona_ssh() {
     echo "Creating background tunnel to $branch_name (id: $environment_id)..."
   else
     echo "Connecting to $branch_name (id: $environment_id)..."
-    [[ -n "$TMUX" ]] && tmux set-option -p @codespace_name "$branch_name"
+    [[ -n "$TMUX" ]] && tmux set-option -p @remote_env_name "$branch_name"
   fi
 
   local ssh_cmd="ssh"
@@ -129,7 +129,7 @@ _ona_ssh() {
   if $forward_only; then
     echo "Background tunnel established. Use 'ssh -O exit $environment_id.gitpod.environment' to close."
   else
-    [[ -n "$TMUX" ]] && tmux set-option -pu @codespace_name
+    [[ -n "$TMUX" ]] && tmux set-option -pu @remote_env_name
   fi
 }
 

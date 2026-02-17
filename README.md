@@ -1,6 +1,6 @@
 # weston.fribley dotfiles
 
-This repository contains configuration files that automatically set up a consistent development environment across different machines and GitHub Codespaces. All tools are configured with the Catppuccin Frappe color theme.
+This repository contains configuration files that automatically set up a consistent development environment across different machines. All tools are configured with the Catppuccin Frappe color theme.
 
 ## Tools Configured
 
@@ -11,10 +11,6 @@ This repository contains configuration files that automatically set up a consist
 - **Git** user configuration
 
 ## Installation
-
-### GitHub Codespaces
-
-This repository works automatically with GitHub Codespaces. When you create a new Codespace, the `bootstrap.sh` script will execute automatically and set up all configurations via symlinks.
 
 ### Manual Installation
 
@@ -28,6 +24,5 @@ The bootstrap script creates symlinks from this repository to your home director
 
 ## Custom zsh functions
 
-- `cs` -- interact with GitHub Codespaces (`cs help` for usage).
-- `prs` -- view and open PRs in Codespaces (`prs help` for usage).
+- `prs` -- view and open GitHub PRs (`prs help` for usage).
 - `ona` -- interact with Ona environments (`ona help` for usage).
