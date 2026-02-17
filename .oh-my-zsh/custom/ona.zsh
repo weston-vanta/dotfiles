@@ -10,6 +10,9 @@ ona() {
     list|ls)
       _ona_list "$@"
       ;;
+    start)
+      _ona_start "$@"
+      ;;
     ssh)
       _ona_ssh "$@"
       ;;
@@ -31,7 +34,7 @@ ona() {
 # List all gitpod environments in a user-friendly format
 _ona_list() {
   gitpod environment list -o json | \
-    jq -r '.[] | "\(.status.content.git.branch) - \(.status.phase)"'
+    jq -r '.[] | "\(.id) \(.metadata.name) - \(.status.phase | sub("ENVIRONMENT_PHASE_"; ""))"'
 }
 
 # Ensure Gitpod SSH config exists with ControlPath configured
@@ -65,11 +68,54 @@ _ona_add_port_forward() {
   fi
 }
 
+# Select an environment from `ona list`, by name or fzf
+# Sets: environment_id, env_name in calling scope
+# Usage: _ona_select_environment [env-name]
+_ona_select_environment() {
+  local name="$1"
+  local selected
+
+  if [[ -z "$name" ]]; then
+    if command -v fzf &> /dev/null; then
+      selected=$(ona list | fzf --prompt="Select Environment: ")
+      [[ -z "$selected" ]] && return 1
+    else
+      echo "Please provide an environment name, or install fzf for interactive selection"
+      echo ""
+      echo "Available environments:"
+      _ona_list
+      return 1
+    fi
+  else
+    selected=$(ona list | awk -v name="$name" '$2 == name {print; exit}')
+    if [[ -z "$selected" ]]; then
+      echo "Error: Environment '$name' not found"
+      echo ""
+      echo "Available environments:"
+      _ona_list
+      return 1
+    fi
+  fi
+
+  environment_id=$(awk '{print $1}' <<< "$selected")
+  env_name=$(awk '{print $2}' <<< "$selected")
+}
+
+# Start a gitpod environment
+# Usage: ona start [env-name]
+_ona_start() {
+  local environment_id env_name
+  _ona_select_environment "$1" || return 1
+
+  echo "Starting $env_name (id: $environment_id)..."
+  gitpod environment start "$environment_id"
+}
+
 # SSH into a gitpod environment with proper environment setup
-# Usage: ona ssh [-f|--forward-only] [branch-name]
+# Usage: ona ssh [-f|--forward-only] [env-name]
 _ona_ssh() {
   local forward_only=false
-  local branch_name=""
+  local name=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -78,44 +124,22 @@ _ona_ssh() {
         shift
         ;;
       *)
-        branch_name="$1"
+        name="$1"
         shift
         ;;
     esac
   done
 
-  if [[ -z "$branch_name" ]]; then
-    if command -v fzf &> /dev/null; then
-      branch_name=$(ona list | fzf --prompt="Select Environment: " | awk '{print $1;}')
-      [[ -z "$branch_name" ]] && return 1
-    else
-      echo "Please provide a branch name, or install fzf for interactive selection"
-      echo "Usage: ona ssh [-f|--forward-only] <branch-name>"
-      echo ""
-      echo "Available environments:"
-      _ona_list
-      return 1
-    fi
-  fi
-
-  local environment_id=$(gitpod environment list -o json | \
-    jq -r --arg branch "$branch_name" 'first(.[] | select(.status.content.git.branch == $branch)).id')
-
-  if [[ -z "$environment_id" ]]; then
-    echo "Error: Environment with branch '$branch_name' not found"
-    echo ""
-    echo "Available environments:"
-    _ona_list
-    return 1
-  fi
+  local environment_id env_name
+  _ona_select_environment "$name" || return 1
 
   _ona_ensure_ssh_config
 
   if $forward_only; then
-    echo "Creating background tunnel to $branch_name (id: $environment_id)..."
+    echo "Creating background tunnel to $env_name (id: $environment_id)..."
   else
-    echo "Connecting to $branch_name (id: $environment_id)..."
-    [[ -n "$TMUX" ]] && tmux set-option -p @remote_env_name "$branch_name"
+    echo "Connecting to $env_name (id: $environment_id)..."
+    [[ -n "$TMUX" ]] && tmux set-option -p @remote_env_name "$env_name"
   fi
 
   local ssh_cmd="ssh"
@@ -134,10 +158,10 @@ _ona_ssh() {
 }
 
 # Open a new tmux pane and SSH into a gitpod environment
-# Usage: ona pane [-h|-v] [branch-name]
+# Usage: ona pane [-h|-v] [env-name]
 _ona_pane() {
   local split_direction="v"
-  local branch_name=""
+  local name=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -150,13 +174,13 @@ _ona_pane() {
         shift
         ;;
       *)
-        branch_name="$1"
+        name="$1"
         shift
         ;;
     esac
   done
 
-  tmux split-window -$split_direction "zsh -i -c 'ona ssh $branch_name'"
+  tmux split-window -$split_direction "zsh -i -c 'ona ssh $name'"
 }
 
 # Show help message
@@ -168,20 +192,21 @@ Manage Ona environments with tmux niceties
 
 Subcommands:
   list, ls                     List all Gitpod environments
-  ssh [-f|--forward-only] [branch]
-                               SSH into an environment (interactive if no branch provided)
+  start [name]                 Start an environment (interactive if no name provided)
+  ssh [-f|--forward-only] [name]
+                               SSH into an environment (interactive if no name provided)
                                -f, --forward-only: Create background tunnel without shell
-  pane [-h|-v] [branch]        Open a new tmux pane connected to an environment
+  pane [-h|-v] [name]          Open a new tmux pane connected to an environment
                                -h: horizontal split
                                -v: vertical split (default)
   help                         Show this help message
 
 Examples:
   ona list                        # List all Gitpod environments
-  ona ssh my-branch               # SSH into environment with branch 'my-branch'
-  ona ssh -f my-branch            # Create background tunnel to 'my-branch'
+  ona start research              # Start the 'research' environment
+  ona ssh research                # SSH into the 'research' environment
+  ona ssh -f research             # Create background tunnel to 'research'
   ona pane                        # Open new pane with interactive selection (requires fzf)
-  ona pane my-branch              # Open new pane connected to specific branch
-  ona pane -v my-branch           # Open new vertical pane connected to specific branch
+  ona pane research               # Open new pane connected to 'research'
 EOF
 }
