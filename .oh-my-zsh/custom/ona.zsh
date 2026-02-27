@@ -34,7 +34,9 @@ ona() {
 # List all gitpod environments in a user-friendly format
 _ona_list() {
   gitpod environment list -o json | \
-    jq -r '.[] | "\(.id) \(.metadata.name) - \(.status.phase | sub("ENVIRONMENT_PHASE_"; ""))"'
+    jq -r '.[] |
+      (.status.content.git.branch // "unknown") as $branch |
+      "\(.id) \(.metadata.name)/\($branch) - \(.status.phase | sub("ENVIRONMENT_PHASE_"; ""))"'
 }
 
 # Ensure Gitpod SSH config exists with ControlPath configured
@@ -87,7 +89,7 @@ _ona_select_environment() {
       return 1
     fi
   else
-    selected=$(ona list | awk -v name="$name" '$2 == name {print; exit}')
+    selected=$(ona list | awk -v name="$name" '{split($2, a, "/"); if (a[1] == name) {print; exit}}')
     if [[ -z "$selected" ]]; then
       echo "Error: Environment '$name' not found"
       echo ""
