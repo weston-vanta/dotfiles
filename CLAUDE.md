@@ -15,6 +15,7 @@ A personal dotfiles repository that manages a complete development environment w
 
 The bootstrap script symlinks everything from this repo into `$HOME`:
 - `.config/*` directories → `~/.config/`
+- `.claude/settings.json`, `.claude/prompts/` → `~/.claude/` (individual files/dirs, not the whole directory)
 - `.gitconfig`, `.oh-my-zsh`, `.zshrc` → `~/`
 
 There is no build system, test suite, or linter for the dotfiles themselves.
@@ -31,10 +32,13 @@ There is no build system, test suite, or linter for the dotfiles themselves.
 | `ona.zsh` | `ona` | Gitpod/ONA environment management with SSH tunneling | `ssh`, `fzf` |
 | `git.zsh` | `gg` | Interactive git branch switching | `fzf` |
 | `imageutils.zsh` | `dotviu` | Render Graphviz `.dot` files in terminal | `graphviz`, `viu` |
+| `ai.zsh` | `ai` | AI knowledge management (extract from transcripts, sync to shadow repo) | `jq`, `claude`, `git` |
 
 **Neovim** uses LazyVim distribution with Lazy.nvim package manager. Custom plugin configs go in `.config/nvim/lua/plugins/`. The colorscheme is set in `.config/nvim/lua/config/lazy.lua`.
 
 **tmux** uses `Ctrl+Space` as prefix (not `Ctrl+b`). Pane borders show remote environment name when SSH'd into one. Config at `.config/tmux/tmux.conf`.
+
+**Claude Code** config is symlinked as individual files into `~/.claude/` (not the whole directory, since `~/.claude/` contains transient data like history and sessions). The `ai` command manages knowledge extraction from Claude Code transcripts into `.ai-dev/knowledge.md` files, tracked in a shadow git repo (`.git-ai`).
 
 ## Conventions
 

@@ -94,6 +94,11 @@ for config_dir in "$DOTFILES_DIR/.config"/*; do
 done
 
 echo
+echo "==> Symlinking Claude Code config"
+create_symlink ".claude/settings.json" "$HOME/.claude/settings.json"
+create_symlink ".claude/prompts" "$HOME/.claude/prompts"
+
+echo
 echo "==> Symlinking root dotfiles"
 create_symlink ".gitconfig" "$HOME/.gitconfig"
 create_symlink ".oh-my-zsh" "$HOME/.oh-my-zsh"
