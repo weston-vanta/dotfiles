@@ -16,6 +16,9 @@ ai() {
     sync)
       _ai_sync "$@"
       ;;
+    git)
+      _ai_git "$@"
+      ;;
     help|--help|-h|"")
       _ai_help
       ;;
@@ -162,9 +165,22 @@ _ai_update() {
     return 0
   fi
 
-  # Find transcripts, optionally filtering by last-update timestamp
+  # Find transcripts, optionally filtering by last-update timestamp or provided date
   local -a transcripts
-  if [[ -f ".ai-dev/.last-update" ]]; then
+  local since_date="$1"
+  if [[ -n "$since_date" ]]; then
+    # Validate YYYY-MM-DD format
+    if [[ ! "$since_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+      echo "Error: date must be in YYYY-MM-DD format"
+      return 1
+    fi
+    # Use touch with a reference date to create a temp file for -newer comparison
+    local tmp_ref
+    tmp_ref=$(mktemp)
+    touch -t "$(date -j -f '%Y-%m-%d' "$since_date" '+%Y%m%d0000')" "$tmp_ref"
+    transcripts=("${(@f)$(find "$transcript_dir" -maxdepth 1 -name '*.jsonl' -newer "$tmp_ref" | xargs ls -tr 2>/dev/null)}")
+    rm -f "$tmp_ref"
+  elif [[ -f ".ai-dev/.last-update" ]]; then
     transcripts=("${(@f)$(find "$transcript_dir" -maxdepth 1 -name '*.jsonl' -newer .ai-dev/.last-update | xargs ls -tr 2>/dev/null)}")
   else
     transcripts=("${(@f)$(find "$transcript_dir" -maxdepth 1 -name '*.jsonl' | xargs ls -tr 2>/dev/null)}")
@@ -196,7 +212,7 @@ _ai_update() {
     fi
   done
 
-  mkdir -p .ai-dev && touch .ai-dev/.last-update
+  mkdir -p .ai-dev && date '+%Y-%m-%d' > .ai-dev/.last-update && touch .ai-dev/.last-update
 
   echo "Done. Updated .ai-dev/knowledge.md files."
 }
@@ -251,13 +267,15 @@ Manage AI knowledge for the current repository
 
 Subcommands:
   init                         Initialize .git-ai tracking for the current repo
-  update                       Process new transcripts and update knowledge
+  update [YYYY-MM-DD]          Process new transcripts and update knowledge
   sync                         Commit and push knowledge to the ai branch
+  git <args>                   Run git commands against the .git-ai shadow repo
   help                         Show this help message
 
 Examples:
   ai init                         # Initialize AI knowledge tracking
   ai update                       # Process new transcripts into knowledge
+  ai update 2025-01-15            # Process all transcripts since Jan 15, 2025
   ai sync                         # Commit and push knowledge updates
 EOF
 }
