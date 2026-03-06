@@ -137,7 +137,7 @@ EXCLUDE
   _ai_ensure_main_excludes
 
   local remote_url
-  read -p "Remote URL for shadow repo (blank to skip): " remote_url
+  vared -p "Remote URL for shadow repo (blank to skip): " -c remote_url
   if [[ -n "$remote_url" ]]; then
     _ai_git remote add origin "$remote_url"
   fi
@@ -168,26 +168,33 @@ _ai_update() {
   # Find transcripts, optionally filtering by last-update timestamp or provided date
   local -a transcripts
   local since_date="$1"
+  local newer_ref=""
+
   if [[ -n "$since_date" ]]; then
     # Validate YYYY-MM-DD format
     if [[ ! "$since_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
       echo "Error: date must be in YYYY-MM-DD format"
       return 1
     fi
-    # Use touch with a reference date to create a temp file for -newer comparison
-    local tmp_ref
-    tmp_ref=$(mktemp)
-    touch -t "$(date -j -f '%Y-%m-%d' "$since_date" '+%Y%m%d0000')" "$tmp_ref"
-    transcripts=("${(@f)$(find "$transcript_dir" -maxdepth 1 -name '*.jsonl' -newer "$tmp_ref" | xargs ls -tr 2>/dev/null)}")
-    rm -f "$tmp_ref"
+    newer_ref=$(mktemp)
+    trap "rm -f '$newer_ref'" EXIT
+    if [[ "$OSTYPE" == darwin* ]]; then
+      touch -t "$(date -j -f '%Y-%m-%d' "$since_date" '+%Y%m%d0000')" "$newer_ref"
+    else
+      touch -d "$since_date" "$newer_ref"
+    fi
   elif [[ -f ".ai-dev/.last-update" ]]; then
-    transcripts=("${(@f)$(find "$transcript_dir" -maxdepth 1 -name '*.jsonl' -newer .ai-dev/.last-update | xargs ls -tr 2>/dev/null)}")
-  else
-    transcripts=("${(@f)$(find "$transcript_dir" -maxdepth 1 -name '*.jsonl' | xargs ls -tr 2>/dev/null)}")
+    newer_ref=".ai-dev/.last-update"
   fi
 
-  # Filter out empty entries
-  transcripts=("${(@)transcripts:#}")
+  # Collect .jsonl files sorted oldest-first, optionally filtered by date
+  if [[ -n "$newer_ref" ]]; then
+    transcripts=( ${transcript_dir}/*.jsonl(N.e{'[[ $REPLY -nt '$newer_ref' ]]'}Om) )
+  else
+    transcripts=( ${transcript_dir}/*.jsonl(N.Om) )
+  fi
+
+  [[ -n "$since_date" ]] && rm -f "$newer_ref" && trap - EXIT
 
   if [[ ${#transcripts[@]} -eq 0 ]]; then
     echo "No new transcripts to process"
@@ -196,13 +203,15 @@ _ai_update() {
 
   echo "Processing ${#transcripts[@]} new transcript(s)..."
 
-  # Read the extraction prompt
-  local prompt
-  if [[ ! -f "$HOME/.claude/prompts/knowledge-extraction.md" ]]; then
-    echo "Error: knowledge extraction prompt not found at ~/.claude/prompts/knowledge-extraction.md"
+  # Read the extraction prompt from the dotfiles repo
+  local prompt prompt_file
+  local script_dir="${${(%):-%x}:A:h}"
+  prompt_file="${script_dir:h:h}/.claude/prompts/knowledge-extraction.md"
+  if [[ ! -f "$prompt_file" ]]; then
+    echo "Error: knowledge extraction prompt not found at $prompt_file"
     return 1
   fi
-  prompt=$(cat "$HOME/.claude/prompts/knowledge-extraction.md")
+  prompt=$(cat "$prompt_file")
 
   for transcript in "${transcripts[@]}"; do
     echo "  Processing: $(basename "$transcript")..."
