@@ -63,7 +63,7 @@ _ona_ensure_ssh_config() {
 # Modifies: ssh_cmd variable in calling scope
 _ona_add_port_forward() {
   local port="$1"
-  if lsof -ti :"$port" &> /dev/null; then
+  if nc -z 127.0.0.1 "$port" 2>/dev/null; then
     echo "Warning: Port $port is already in use, skipping port forward"
   else
     ssh_cmd="$ssh_cmd -L 127.0.0.1:$port:127.0.0.1:$port"
@@ -149,6 +149,7 @@ _ona_ssh() {
 
   _ona_add_port_forward 8080
   _ona_add_port_forward 9000
+  _ona_add_port_forward 9223
 
   eval $ssh_cmd "$environment_id.gitpod.environment"
 
