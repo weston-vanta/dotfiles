@@ -38,7 +38,12 @@ _prs_select_fzf() {
   echo "Fetching PRs..." >&2
   local fzf_template='{{range .}}{{.number}}	{{.title}} (by {{.author.login}})
 {{end}}'
-  local pr_list=$(_prs_list "$team" "$fzf_template")
+  local pr_list
+  if [[ -n "$team" ]]; then
+    pr_list=$(_prs_list "$team" "$fzf_template")
+  else
+    pr_list=$(_prs_list "$fzf_template")
+  fi
 
   [[ -z "$pr_list" ]] && { echo "No open PRs found" >&2; return 1; }
 
@@ -50,7 +55,7 @@ _prs_select_fzf() {
 
 # Print a horizontal separator line
 _prs_separator() {
-  echo "  \033[2m$(printf '%.0s─' {1..60})\033[0m"
+  printf '  \033[2m%s\033[0m\n' "$(printf '%.0s─' {1..60})"
 }
 
 # List open GitHub PRs where the current user is a reviewer
@@ -106,7 +111,6 @@ EOF
     else
       search_query="($author_filter) review-requested:$GITHUB_USER"
     fi
-    echo "Search query:\n$search_query"
   else
     search_query="review-requested:$GITHUB_USER"
   fi
@@ -157,7 +161,7 @@ _prs_open() {
 
   # Save PR context
   local context_file="PR_CONTEXT.md"
-  prs view "$pr_number" | sed $'s/\033\[[0-9;]*m//g' > "$context_file"
+  prs view "$pr_number" --output "$context_file"
   echo "Switched to '$branch' — PR context saved to $context_file"
 }
 
@@ -319,7 +323,7 @@ _prs_view_display() {
     printf '%s\n' "$body" | glow -s dark -w 80
     echo ""
   else
-    echo "\n  ${dim}No description provided.${reset}\n"
+    printf '\n  %s\n\n' "${dim}No description provided.${reset}"
   fi
 
   # --- Unresolved Threads ---
@@ -505,9 +509,9 @@ _prs_research() {
   research_doc=$(find "$worktree_path" -path '*/.ai-dev/*-research.md' -newer "$pr_file" 2>/dev/null | head -1)
 
   if [[ -n "$research_doc" ]]; then
-    echo "\nResearch report: $research_doc"
+    printf '\nResearch report: %s\n' "$research_doc"
   else
-    echo "\nWorktree: $worktree_path"
+    printf '\nWorktree: %s\n' "$worktree_path"
     echo "PR context: $pr_file"
   fi
 }
