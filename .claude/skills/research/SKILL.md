@@ -7,7 +7,7 @@ description: Use when working in an unfamiliar part of the codebase, when a task
 
 ## Overview
 
-Investigate a codebase question or topic and produce a reviewed markdown research document. Queries the `.ai-dev` knowledge layer, explores the codebase directly, and asks clarifying questions to build understanding.
+Investigate a codebase question or topic and produce a reviewed markdown research document. Queries the `.ai-dev` knowledge layer, explores the codebase directly, gathers external resources, and asks clarifying questions to build understanding.
 
 **Announce at start:** "I'm using the research skill to investigate this."
 
@@ -16,6 +16,7 @@ Investigate a codebase question or topic and produce a reviewed markdown researc
 ### 1. Understand the question
 
 - Read any provided context (links to docs, files, prior research)
+- Identify the **research variant** (see below) -- this determines document structure
 - Ask clarifying questions one at a time to narrow the research scope
 - Multiple choice preferred when possible
 
@@ -24,17 +25,44 @@ Investigate a codebase question or topic and produce a reviewed markdown researc
 - Glob for `**/.ai-dev/knowledge.md` to find existing knowledge
 - Read relevant knowledge index files and detail files
 - Explore the codebase directly: read source files, grep for patterns, check git history
-- Synthesize findings -- don't just dump raw file contents
 
-### 3. Confirm output location
+**Depth matters.** The goal is to give the reader enough context to act without needing to go read the source themselves:
+
+- Include **code snippets** for key logic, not just descriptions of what code does
+- Show **diffs or before/after** when the research involves changes
+- Provide **background and context** -- why does this code exist? What problem does it solve? What came before?
+- Quote **relevant comments, commit messages, and PR descriptions** verbatim when they add context
+- Don't just summarize -- give the reader the primary sources inline
+
+### 3. Gather external resources
+
+Scan all available context (PR descriptions, ticket references, doc links, error messages) for **links and references to external systems**. Dispatch subagents in parallel to fetch and summarize each one:
+
+| Resource | Tool |
+|----------|------|
+| Jira tickets | `acli` (Atlassian CLI) or Jira MCP |
+| Google Docs/Sheets/Slides | `googleworkspace` CLI |
+| Figma links | Figma MCP |
+| Other websites/docs | WebFetch |
+| GitHub issues/PRs | `gh` CLI |
+
+Each subagent should:
+
+1. Fetch the resource using the appropriate tool
+2. Extract information relevant to the research question
+3. Return a structured summary: key context, requirements, decisions, and open questions found in the resource
+
+If no external links are found, note that and move on. Do not skip this step -- actively look for references to follow.
+
+### 4. Confirm output location
 
 - Propose the most relevant `.ai-dev` directory for the research doc
 - Confirm with the user before writing
 - File naming: `YYYY-MM-DD-<topic>-research.md`
 
-### 4. Write and review
+### 5. Write and review
 
-- Write the research document with frontmatter:
+Write the research document with frontmatter:
 
 ```yaml
 ---
@@ -44,10 +72,11 @@ type: research
 ---
 ```
 
-- **REQUIRED SUB-SKILL:** Use writing-docs for the review loop
-- Cite which `.ai-dev/` directories and source files your findings draw from
+Cite which `.ai-dev/` directories, source files, and external resources your findings draw from.
 
-### 5. Handoff
+**GATE: All output goes through writing-docs.** Do not present research findings in chat. Write the document to the agreed-upon file path and invoke the writing-docs skill for the review loop. The user reviews and refines the document on disk, not in conversation.
+
+### 6. Handoff
 
 When the user approves the document:
 
@@ -55,9 +84,37 @@ When the user approves the document:
 
 If yes, invoke the design skill, passing the research doc path.
 
-## Research Document Structure
+## Research Variants
+
+Choose the document structure that fits the research question. Default to **General** if none of the specific variants apply.
+
+### General Research
+
+For codebase exploration, understanding patterns, or investigating a topic.
 
 - **Summary** -- key findings in 2-3 sentences
 - **Findings** -- organized by topic, citing sources
 - **Open Questions** -- anything unresolved that may affect design
-- **References** -- list of files and `.ai-dev` entries consulted
+- **References** -- list of files, `.ai-dev` entries, and external resources consulted
+
+### PR Review
+
+For building context to review a pull request. Trigger: user asks for context on a PR, asks to review a PR, or provides a PR number/link.
+
+**Investigation steps specific to PR review:**
+
+1. Fetch the PR metadata, description, diff, and review comments via `gh`
+2. Follow **every link** in the PR description and comments (Jira tickets, related PRs, docs, Slack threads) -- use step 3's external resources process
+3. Read the changed files in full (not just the diff hunks) to understand surrounding context
+4. Check CODEOWNERS, service ownership files, and team conventions
+5. Read relevant tests -- both changed and unchanged -- to understand expected behavior
+
+**Document structure for PR review:**
+
+- **Summary** -- what the PR does and why, in 2-3 sentences
+- **Background** -- the problem being solved, with links to tickets/issues and their content. Include enough context that the reader doesn't need to click through to understand.
+- **Changes walkthrough** -- file by file, with code snippets showing the key changes and their surrounding context. Explain the *why*, not just the *what*.
+- **Review comments** -- summarize existing review discussion. For each comment thread: the concern raised, the author's response (if any), and whether it's resolved.
+- **Risk assessment** -- scope of change, correctness considerations, edge cases, rollback implications
+- **Review recommendations** -- specific things the reviewer should verify, approve, or push back on
+- **References** -- PR link, ticket links, related PRs, files read, external resources consulted

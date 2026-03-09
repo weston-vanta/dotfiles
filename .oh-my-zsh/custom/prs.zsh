@@ -6,7 +6,7 @@ prs() {
   local subcommand="$1"
 
   case "$subcommand" in
-    list|open|view)
+    list|open|view|research)
       shift
       "_prs_$subcommand" "$@"
       ;;
@@ -170,19 +170,30 @@ _prs_view() {
   local repo="$org/obsidian"
   local pr_number=""
   local team=""
+  local output_file=""
 
   while [[ $# -gt 0 ]]; do
-    if [[ "$1" =~ ^[0-9]+$ ]]; then
-      pr_number="$1"
-    else
-      team="$1"
-    fi
-    shift
+    case "$1" in
+      --output|-o)
+        output_file="$2"
+        shift 2
+        ;;
+      *)
+        if [[ "$1" =~ ^[0-9]+$ ]]; then
+          pr_number="$1"
+        else
+          team="$1"
+        fi
+        shift
+        ;;
+    esac
   done
 
   command -v gh &> /dev/null || { echo "Error: GitHub CLI (gh) not found. Install from https://cli.github.com" >&2; return 1; }
   command -v jq &> /dev/null || { echo "Error: jq not found. Install with: brew install jq" >&2; return 1; }
-  command -v glow &> /dev/null || { echo "Error: glow not found. Install with: brew install glow" >&2; return 1; }
+  if [[ -z "$output_file" ]]; then
+    command -v glow &> /dev/null || { echo "Error: glow not found. Install with: brew install glow" >&2; return 1; }
+  fi
 
   # Default team to "mine" when no arguments provided
   [[ -z "$team" && -z "$pr_number" ]] && team="mine"
@@ -191,11 +202,11 @@ _prs_view() {
     pr_number=$(_prs_select_fzf "Select PR to view: " "$team") || return 1
   fi
 
-  _prs_view_render "$org" "$repo" "$pr_number"
+  _prs_view_render "$org" "$repo" "$pr_number" "$output_file"
 }
 
 _prs_view_render() {
-  local org="$1" repo="$2" pr_number="$3"
+  local org="$1" repo="$2" pr_number="$3" output_file="$4"
 
   echo "Fetching PR #$pr_number..."
 
@@ -247,7 +258,11 @@ query($owner: String!, $repo: String!, $pr: Int!) {
 
   [[ "$pr_json" == "null" ]] && { echo "Error: PR #$pr_number not found" >&2; return 1; }
 
-  _prs_view_display "$pr_json"
+  if [[ -n "$output_file" ]]; then
+    _prs_view_save "$pr_json" "$output_file"
+  else
+    _prs_view_display "$pr_json"
+  fi
 }
 
 _prs_view_display() {
@@ -366,6 +381,137 @@ _prs_view_display() {
   echo ""
 }
 
+# Save PR details to a markdown file
+_prs_view_save() {
+  local pr_json="$1"
+  local output_file="$2"
+
+  local title=$(jq -r '.title' <<< "$pr_json")
+  local number=$(jq -r '.number' <<< "$pr_json")
+  local state=$(jq -r '.state' <<< "$pr_json")
+  local review_decision=$(jq -r '.reviewDecision // "PENDING"' <<< "$pr_json")
+  local author=$(jq -r '.author.login' <<< "$pr_json")
+  local head_ref=$(jq -r '.headRefName' <<< "$pr_json")
+  local base_ref=$(jq -r '.baseRefName' <<< "$pr_json")
+  local url=$(jq -r '.url' <<< "$pr_json")
+  local body=$(jq -r '.body // ""' <<< "$pr_json")
+
+  {
+    printf '# %s (#%s)\n\n' "$title" "$number"
+    printf '**%s** | %s → %s | %s | %s\n' "$author" "$head_ref" "$base_ref" "$state" "$review_decision"
+    printf '%s\n\n' "$url"
+    printf '---\n\n'
+
+    if [[ -n "$body" ]]; then
+      printf '%s\n\n' "$body"
+    else
+      printf '*No description provided.*\n\n'
+    fi
+
+    local threads_json=$(jq '[.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false)]' <<< "$pr_json")
+    local thread_count=$(jq 'length' <<< "$threads_json")
+
+    printf '---\n\n'
+
+    if [[ "$thread_count" -eq 0 ]]; then
+      printf 'No unresolved threads.\n'
+    else
+      printf '## Unresolved Threads (%d)\n\n' "$thread_count"
+
+      jq -c '.[]' <<< "$threads_json" | while IFS= read -r thread; do
+        local file_path=$(jq -r '.path' <<< "$thread")
+        local line_num=$(jq -r '.line // ""' <<< "$thread")
+
+        if [[ -n "$line_num" && "$line_num" != "null" ]]; then
+          printf '### `%s:%s`\n\n' "$file_path" "$line_num"
+        else
+          printf '### `%s`\n\n' "$file_path"
+        fi
+
+        local diff_hunk=$(jq -r '.comments.nodes[0].diffHunk // ""' <<< "$thread")
+        if [[ -n "$diff_hunk" ]]; then
+          printf '```diff\n%s\n```\n\n' "$diff_hunk"
+        fi
+
+        jq -c '.comments.nodes[]' <<< "$thread" | while IFS= read -r comment; do
+          local comment_author=$(jq -r '.author.login' <<< "$comment")
+          local comment_body=$(jq -r '.body' <<< "$comment")
+          local comment_date=$(jq -r '.createdAt' <<< "$comment")
+
+          printf '**%s** (%s)\n\n%s\n\n' "$comment_author" "$comment_date" "$comment_body"
+        done
+      done
+    fi
+  } > "$output_file"
+
+  echo "PR details saved to $output_file"
+}
+
+# Research a PR: create worktree, fetch PR context, run Claude research
+# Usage: prs research [team-name] [pr-number]
+_prs_research() {
+  local pr_number=""
+  local team=""
+
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" =~ ^[0-9]+$ ]]; then
+      pr_number="$1"
+    else
+      team="$1"
+    fi
+    shift
+  done
+
+  command -v gh &> /dev/null || { echo "Error: GitHub CLI (gh) not found" >&2; return 1; }
+  command -v claude &> /dev/null || { echo "Error: claude CLI not found" >&2; return 1; }
+
+  if [[ -z "$pr_number" ]]; then
+    pr_number=$(_prs_select_fzf "Select PR to research: " "$team") || return 1
+  fi
+
+  # Get the PR branch name
+  local branch
+  branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName' 2>&1) || {
+    echo "Error: Could not fetch PR #$pr_number" >&2
+    echo "$branch" >&2
+    return 1
+  }
+
+  # Create worktree as sibling of repo root
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel) || { echo "Error: Not in a git repository" >&2; return 1; }
+  local repo_name=$(basename "$repo_root")
+  local worktree_path="$(dirname "$repo_root")/${repo_name}-pr-${pr_number}"
+
+  git fetch origin "$branch" || { echo "Error: Failed to fetch branch '$branch'" >&2; return 1; }
+
+  git worktree add "$worktree_path" "origin/$branch" || {
+    echo "Error: Failed to create worktree at $worktree_path" >&2
+    return 1
+  }
+
+  echo "Created worktree at $worktree_path"
+
+  # Save PR context to the worktree
+  local pr_file="$worktree_path/pr-${pr_number}.md"
+  _prs_view_render "VantaInc" "VantaInc/obsidian" "$pr_number" "$pr_file"
+
+  # Run Claude research from the worktree directory
+  echo "Running Claude research on PR #$pr_number..."
+  (cd "$worktree_path" && claude --permission-mode bypassPermissions -p "/research Give me comprehensive context to support my review of pr-${pr_number}.md")
+
+  # Find the generated research doc
+  local research_doc
+  research_doc=$(find "$worktree_path" -path '*/.ai-dev/*-research.md' -newer "$pr_file" 2>/dev/null | head -1)
+
+  if [[ -n "$research_doc" ]]; then
+    echo "\nResearch report: $research_doc"
+  else
+    echo "\nWorktree: $worktree_path"
+    echo "PR context: $pr_file"
+  fi
+}
+
 # Show help message
 _prs_help() {
   cat <<EOF
@@ -383,9 +529,15 @@ Subcommands:
                         Switch to a PR branch and save context file (PR_CONTEXT.md)
                         team-name: optional filter for interactive selection (use "mine" for your authored PRs)
                         pr-number: optional PR number (uses fzf for interactive selection if not provided)
-  view [team-name] [pr-number]
+  view [team-name] [pr-number] [--output|-o <file>]
                         View PR details: title, description, and unresolved threads
                         team-name: optional filter for interactive selection (default: "mine")
+                        pr-number: optional PR number (uses fzf for interactive selection if not provided)
+                        --output/-o: save PR details to a markdown file
+  research [team-name] [pr-number]
+                        Create a worktree and run Claude research for PR review
+                        Creates a sibling worktree, fetches PR context, and runs /research
+                        team-name: optional filter for interactive selection
                         pr-number: optional PR number (uses fzf for interactive selection if not provided)
   help                  Show this help message
 
@@ -401,10 +553,13 @@ Examples:
   prs view 1234                 # View PR #1234 details and unresolved threads
   prs view                      # Interactively select from your PRs to view
   prs view backend-team         # Interactively select from backend-team's PRs to view
+  prs view 1234 -o pr.md       # View PR #1234 and save details to pr.md
+  prs research 1234             # Create worktree and run Claude research on PR #1234
+  prs research                  # Interactively select a PR to research
 
 Notes:
   - prs open saves PR context to PR_CONTEXT.md in the repo root (add to .gitignore)
   - Requires: gh CLI, fzf (for interactive selection)
-  - prs view requires: gh CLI, jq, glow, fzf (for interactive selection)
+  - prs view requires: gh CLI, jq, glow (terminal display only), fzf (for interactive selection)
 EOF
 }
