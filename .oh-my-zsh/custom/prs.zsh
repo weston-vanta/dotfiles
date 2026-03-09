@@ -38,12 +38,7 @@ _prs_select_fzf() {
   echo "Fetching PRs..." >&2
   local fzf_template='{{range .}}{{.number}}	{{.title}} (by {{.author.login}})
 {{end}}'
-  local pr_list
-  if [[ -n "$team" ]]; then
-    pr_list=$(_prs_list "$team" "$fzf_template")
-  else
-    pr_list=$(_prs_list "$fzf_template")
-  fi
+  local pr_list=$(_prs_list $team --template "$fzf_template")
 
   [[ -z "$pr_list" ]] && { echo "No open PRs found" >&2; return 1; }
 
@@ -59,11 +54,11 @@ _prs_separator() {
 }
 
 # List open GitHub PRs where the current user is a reviewer
-# Usage: _prs_list [team-name] [--all] [template]
+# Usage: _prs_list [team-name] [--all] [--template <template>]
 #   team-name: optional filter to show only PRs from authors in that team
 #              use "mine" to show PRs authored by you
 #   --all: show all PRs from team without filtering by review-requested
-#   template: optional custom template (uses default if not provided)
+#   --template: optional custom Go template (uses default if not provided)
 _prs_list() {
   local org="VantaInc"
   local repo="$org/obsidian"
@@ -77,12 +72,12 @@ _prs_list() {
         all_prs=true
         shift
         ;;
+      --template)
+        template="$2"
+        shift 2
+        ;;
       *)
-        if [[ -z "$team" ]]; then
-          team="$1"
-        elif [[ -z "$template" ]]; then
-          template="$1"
-        fi
+        team="$1"
         shift
         ;;
     esac
