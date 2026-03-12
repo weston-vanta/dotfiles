@@ -19,6 +19,12 @@ ona() {
     pane)
       _ona_pane "$@"
       ;;
+    run)
+      _ona_run "$@"
+      ;;
+    agent-browser|ab)
+      _ona_agent_browser "$@"
+      ;;
     help|--help|-h|"")
       _ona_help
       ;;
@@ -60,13 +66,13 @@ _ona_ensure_ssh_config() {
 
 # Add port forward to ssh_cmd if port is available
 # Usage: _ona_add_port_forward <port>
-# Modifies: ssh_cmd variable in calling scope
+# Modifies: ssh_cmd array in calling scope
 _ona_add_port_forward() {
   local port="$1"
   if nc -z 127.0.0.1 "$port" 2>/dev/null; then
     echo "Warning: Port $port is already in use, skipping port forward"
   else
-    ssh_cmd="$ssh_cmd -L 127.0.0.1:$port:127.0.0.1:$port"
+    ssh_cmd+=(-L "127.0.0.1:$port:127.0.0.1:$port")
   fi
 }
 
@@ -89,7 +95,14 @@ _ona_select_environment() {
       return 1
     fi
   else
-    selected=$(ona list | awk -v name="$name" '{split($2, a, "/"); if (a[1] == name) {print; exit}}')
+    selected=$(ona list | while IFS= read -r line; do
+      local entry_name="${line#* }"
+      entry_name="${entry_name%%/*}"
+      if [[ "$entry_name" == "$name" ]]; then
+        echo "$line"
+        break
+      fi
+    done)
     if [[ -z "$selected" ]]; then
       echo "Error: Environment '$name' not found"
       echo ""
@@ -99,8 +112,9 @@ _ona_select_environment() {
     fi
   fi
 
-  environment_id=$(awk '{print $1}' <<< "$selected")
-  env_name=$(awk '{print $2}' <<< "$selected")
+  environment_id="${selected%% *}"
+  env_name="${selected#* }"
+  env_name="${env_name% - *}"
 }
 
 # Start a gitpod environment
@@ -114,16 +128,27 @@ _ona_start() {
 }
 
 # SSH into a gitpod environment with proper environment setup
-# Usage: ona ssh [-f|--forward-only] [env-name]
+# Usage: ona ssh [-f|--forward [-p port]...] [env-name]
+#        ona ssh exit  — close all forwarded port tunnels
 _ona_ssh() {
-  local forward_only=false
+  if [[ "$1" == "exit" ]]; then
+    _ona_ssh_exit
+    return $?
+  fi
+
+  local forward=false
   local name=""
+  local -a ports=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -f|--forward-only)
-        forward_only=true
+      -f|--forward)
+        forward=true
         shift
+        ;;
+      -p|--port)
+        ports+=("$2")
+        shift 2
         ;;
       *)
         name="$1"
@@ -132,30 +157,28 @@ _ona_ssh() {
     esac
   done
 
+  # Default ports when forwarding is requested but no specific ports given
+  if $forward && [[ ${#ports[@]} -eq 0 ]]; then
+    ports=(8080 9000 9223)
+  fi
+
   local environment_id env_name
   _ona_select_environment "$name" || return 1
 
   _ona_ensure_ssh_config
 
-  if $forward_only; then
+  if $forward; then
     echo "Creating background tunnel to $env_name (id: $environment_id)..."
+    local -a ssh_cmd=(ssh -f -N)
+    for port in "${ports[@]}"; do
+      _ona_add_port_forward "$port"
+    done
+    "${ssh_cmd[@]}" "$environment_id.gitpod.environment"
+    echo "Background tunnel established. Use 'ona ssh exit' to close."
   else
     echo "Connecting to $env_name (id: $environment_id)..."
     [[ -n "$TMUX" ]] && tmux set-option -p @remote_env_name "$env_name"
-  fi
-
-  local ssh_cmd="ssh"
-  $forward_only && ssh_cmd="$ssh_cmd -f -N"
-
-  _ona_add_port_forward 8080
-  _ona_add_port_forward 9000
-  _ona_add_port_forward 9223
-
-  eval $ssh_cmd "$environment_id.gitpod.environment"
-
-  if $forward_only; then
-    echo "Background tunnel established. Use 'ssh -O exit $environment_id.gitpod.environment' to close."
-  else
+    ssh "$environment_id.gitpod.environment"
     [[ -n "$TMUX" ]] && tmux set-option -pu @remote_env_name
   fi
 }
@@ -183,7 +206,70 @@ _ona_pane() {
     esac
   done
 
-  tmux split-window -$split_direction "zsh -i -c 'ona ssh $name'"
+  tmux split-window -${split_direction} "zsh -i -c \"ona ssh '${name}'\""
+}
+
+# Close all active Gitpod SSH control connections
+_ona_ssh_exit() {
+  local control_dir="$HOME/.ssh/gitpod/control"
+  if [[ ! -d "$control_dir" ]]; then
+    echo "No control socket directory found at $control_dir"
+    return 0
+  fi
+
+  local sockets=("$control_dir"/*(N))
+  if [[ ${#sockets[@]} -eq 0 ]]; then
+    echo "No active connections found"
+    return 0
+  fi
+
+  for socket in "${sockets[@]}"; do
+    echo "Closing connection: $(basename "$socket")"
+    ssh -O exit -S "$socket" dummy 2>/dev/null
+  done
+
+  echo "All connections closed"
+}
+
+# Run a command on a remote environment via SSH
+# Usage: ona run <env-name> <command...>
+_ona_run() {
+  if [[ $# -lt 2 ]]; then
+    echo "Usage: ona run <environment> <command...>"
+    return 1
+  fi
+
+  local name="$1"
+  shift
+
+  local environment_id env_name
+  _ona_select_environment "$name" || return 1
+
+  _ona_ensure_ssh_config
+
+  ssh "$environment_id.gitpod.environment" "$@"
+}
+
+# Open agent-browser in a remote environment
+# Usage: ona agent-browser <env-name> <port>
+_ona_agent_browser() {
+  if [[ $# -lt 2 ]]; then
+    echo "Usage: ona agent-browser <environment> <port>"
+    return 1
+  fi
+
+  local name="$1"
+  local port="$2"
+
+  echo "Checking if local dev server is running on $name..."
+  if ! ona run "$name" curl -s -o /dev/null -w '%{http_code}' http://localhost:8080 | grep -q 200; then
+    echo "Error: Local dev server is not responding on localhost:8080 in $name"
+    return 1
+  fi
+  echo "Dev server is running."
+
+  echo "Opening agent-browser on port $port..."
+  ona run "$name" "AGENT_BROWSER_STREAM_PORT=$port agent-browser open 'http://127.0.0.1:8080/internal/auth/impersonate/5df91759d463fd48218e9f15'"
 }
 
 # Show help message
@@ -196,20 +282,29 @@ Manage Ona environments with tmux niceties
 Subcommands:
   list, ls                     List all Gitpod environments
   start [name]                 Start an environment (interactive if no name provided)
-  ssh [-f|--forward-only] [name]
+  ssh [-f|--forward] [-p port]... [name]
                                SSH into an environment (interactive if no name provided)
-                               -f, --forward-only: Create background tunnel without shell
+                               -f, --forward: Create background tunnel with port forwarding (no shell)
+                               -p, --port: Forward specific port(s) (default: 8080,9000,9223)
+  ssh exit                     Close all active SSH tunnels to Ona environments
   pane [-h|-v] [name]          Open a new tmux pane connected to an environment
                                -h: horizontal split
                                -v: vertical split (default)
+  run <name> <command...>      Run a command on a remote environment via SSH
+  agent-browser, ab <name> <port>
+                               Open agent-browser in a remote environment
   help                         Show this help message
 
 Examples:
   ona list                        # List all Gitpod environments
   ona start research              # Start the 'research' environment
-  ona ssh research                # SSH into the 'research' environment
-  ona ssh -f research             # Create background tunnel to 'research'
+  ona ssh research                # SSH into the 'research' environment (no port forwarding)
+  ona ssh --forward research      # Create background tunnel to 'research' (default ports)
+  ona ssh --forward -p 3000 research  # Tunnel only port 3000 to 'research'
+  ona ssh exit                     # Close all active SSH tunnels
   ona pane                        # Open new pane with interactive selection (requires fzf)
   ona pane research               # Open new pane connected to 'research'
+  ona run research ls -la         # Run 'ls -la' on the 'research' environment
+  ona agent-browser research 9222 # Open agent-browser on port 9222
 EOF
 }

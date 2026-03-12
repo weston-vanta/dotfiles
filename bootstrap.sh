@@ -100,6 +100,24 @@ create_symlink ".claude/prompts" "$HOME/.claude/prompts"
 create_symlink ".claude/skills" "$HOME/.claude/skills"
 
 echo
+echo "==> Symlinking SSH custom config"
+create_symlink ".ssh/custom" "$HOME/.ssh/custom"
+mkdir -p "$HOME/.ssh/custom/sockets"
+
+# Idempotently add Include directive to ~/.ssh/config
+SSH_CONFIG="$HOME/.ssh/config"
+INCLUDE_LINE="Include ~/.ssh/custom/config"
+if [[ ! -f "$SSH_CONFIG" ]]; then
+  echo "Creating $SSH_CONFIG with Include directive"
+  mkdir -p "$HOME/.ssh"
+  printf '%s\n\n' "$INCLUDE_LINE" > "$SSH_CONFIG"
+  chmod 600 "$SSH_CONFIG"
+elif ! grep -qF "$INCLUDE_LINE" "$SSH_CONFIG"; then
+  echo "Adding Include directive to $SSH_CONFIG"
+  printf '%s\n\n%s' "$INCLUDE_LINE" "$(cat "$SSH_CONFIG")" > "$SSH_CONFIG"
+fi
+
+echo
 echo "==> Symlinking root dotfiles"
 create_symlink ".gitconfig" "$HOME/.gitconfig"
 create_symlink ".oh-my-zsh" "$HOME/.oh-my-zsh"

@@ -26,3 +26,6 @@ The bootstrap script creates symlinks from this repository to your home director
 
 - `prs` -- view and open GitHub PRs (`prs help` for usage).
 - `ona` -- interact with Ona environments (`ona help` for usage).
+- `gg` -- interactive git branch switching via fzf.
+- `dotviu` -- render Graphviz `.dot` files in the terminal.
+- `ai` -- AI knowledge management (extract from transcripts, sync to shadow repo).
