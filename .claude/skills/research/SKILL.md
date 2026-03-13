@@ -16,7 +16,6 @@ Investigate a codebase question or topic and produce a reviewed markdown researc
 ### 1. Understand the question
 
 - Read any provided context (links to docs, files, prior research)
-- Identify the **research variant** (see below) -- this determines document structure
 - Ask clarifying questions one at a time to narrow the research scope
 - Multiple choice preferred when possible
 
@@ -84,46 +83,9 @@ When the user approves the document:
 
 If yes, invoke the design skill, passing the research doc path.
 
-## Research Variants
-
-Choose the document structure that fits the research question. Default to **General** if none of the specific variants apply.
-
-### General Research
-
-For codebase exploration, understanding patterns, or investigating a topic.
+## Document Structure
 
 - **Summary** -- key findings in 2-3 sentences
 - **Findings** -- organized by topic, citing sources
 - **Open Questions** -- anything unresolved that may affect design
 - **References** -- list of files, `.ai-dev` entries, and external resources consulted
-
-### PR Review
-
-For building background understanding of the systems and codebase areas involved in a pull request. Trigger: user asks for context on a PR, asks to review a PR, or provides a PR number/link.
-
-**Goal:** Give the reader a complete picture of the systems, features, and code involved so they can review the PR with full context. This is **not** an assessment of the PR itself -- no opinions on the changes, no suggestions for next steps, no summary of review comments.
-
-**Investigation steps specific to PR review:**
-
-1. Fetch the PR metadata and description via `gh`
-2. Follow **every link** in the PR description (Jira tickets, related PRs, docs, design docs) -- use step 3's external resources process
-3. Read the changed files **in full** (not just the diff hunks) to understand the systems being modified
-4. For each changed area, trace the code paths: callers, callees, related modules, data flow
-5. Check `git log` for recent history of the changed files and directories -- what's been happening in this area lately? Include relevant commit messages verbatim.
-6. Find and read related PRs that recently touched the same files/modules (use `gh pr list --search` with file paths or component names)
-7. Read relevant tests to understand expected behavior and invariants
-8. Determine `product-platform` ownership of changed files: first check PR comments for an automated ownership breakdown; if none exists, consult MAINTAINERS files in the repo
-
-**Document structure for PR review:**
-
-- **Review investment** -- this section goes first. Rate as **stamp** (no real review needed), **light** (simple, safe changes with little `product-platform` ownership), **moderate**, or **deep** (block time, test locally). One-line rating followed by a brief justification citing:
-  - *Ownership*: how much of the change falls under `product-platform`? More ownership = more investment.
-  - *Complexity*: straightforward change, or tricky logic / multiple interacting systems / subtle invariants?
-  - *Risk*: could this break things in production? Data migrations, auth changes, payment logic, etc.
-  Then list the changed files owned by `product-platform` (with their paths). To determine ownership: first check PR comments for an automated ownership breakdown; if none exists, consult MAINTAINERS files in the repo.
-- **Summary** -- what systems/features are involved, in 2-3 sentences
-- **Motivation** -- what's driving this change? Link to tickets, incidents, design docs, and include their content inline. The reader should understand the *why* without clicking through.
-- **System context** -- how the affected code fits into the larger system. Architecture, data flow, key abstractions. Include code snippets of the important interfaces and types.
-- **Recent history** -- what's been happening in these areas of the codebase recently? Summarize relevant recent commits and PRs with dates and authors. Quote commit messages that add context.
-- **Code walkthrough** -- for each changed file/area, explain what the existing code does, how it works, and what its responsibilities are. Include code snippets of surrounding context, not just the changed lines.
-- **References** -- PR link, ticket links, related PRs, files read, external resources consulted
