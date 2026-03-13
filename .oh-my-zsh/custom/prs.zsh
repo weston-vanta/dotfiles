@@ -497,7 +497,7 @@ _prs_research() {
 
   # Run Claude research from the worktree directory
   echo "Running Claude research on PR #$pr_number..."
-  (cd "$worktree_path" && claude --permission-mode bypassPermissions -p "/research Give me comprehensive context to support my review of pr-${pr_number}.md")
+  (cd "$worktree_path" && claude --permission-mode bypassPermissions -p "/research Build background understanding of the systems and codebase areas involved in pr-${pr_number}.md. Focus on system context, motivation, and recent history — not assessment of the changes.")
 
   # Find the generated research doc
   local research_doc
