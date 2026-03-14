@@ -95,9 +95,10 @@ done
 
 echo
 echo "==> Symlinking Claude Code config"
-create_symlink ".claude/settings.json" "$HOME/.claude/settings.json"
-create_symlink ".claude/prompts" "$HOME/.claude/prompts"
-create_symlink ".claude/skills" "$HOME/.claude/skills"
+create_symlink "claude/settings.json" "$HOME/.claude/settings.json"
+create_symlink "claude/prompts" "$HOME/.claude/prompts"
+create_symlink "claude/skills" "$HOME/.claude/skills"
+create_symlink "claude/hooks" "$HOME/.claude/hooks"
 
 echo
 echo "==> Symlinking SSH custom config"

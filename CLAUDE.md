@@ -15,7 +15,7 @@ A personal dotfiles repository that manages a complete development environment w
 
 The bootstrap script symlinks everything from this repo into `$HOME`:
 - `.config/*` directories → `~/.config/`
-- `.claude/settings.json`, `.claude/prompts/` → `~/.claude/` (individual files/dirs, not the whole directory)
+- `claude/` contents (settings, prompts, skills, hooks) → `~/.claude/` (individual files/dirs, not the whole directory)
 - `.gitconfig`, `.oh-my-zsh`, `.zshrc` → `~/`
 
 There is no build system, test suite, or linter for the dotfiles themselves.
@@ -38,7 +38,7 @@ There is no build system, test suite, or linter for the dotfiles themselves.
 
 **tmux** uses `Ctrl+Space` as prefix (not `Ctrl+b`). Pane borders show remote environment name when SSH'd into one. Config at `.config/tmux/tmux.conf`.
 
-**Claude Code** config is symlinked as individual files into `~/.claude/` (not the whole directory, since `~/.claude/` contains transient data like history and sessions). The `ai` command manages knowledge extraction from Claude Code transcripts into `.ai-dev/knowledge.md` files, tracked in a shadow git repo (`.git-ai`).
+**Claude Code** config lives in `claude/` (no dot, to distinguish from project-level `.claude/` directories) and is symlinked as individual files into `~/.claude/` (not the whole directory, since `~/.claude/` contains transient data like history and sessions). The `ai` command manages knowledge extraction from Claude Code transcripts into `.ai-dev/knowledge.md` files, tracked in a shadow git repo (`.git-ai`).
 
 ## Conventions
 
