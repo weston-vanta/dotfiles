@@ -72,7 +72,7 @@ Users provide feedback in two ways:
 
 ### Availability check (step 2)
 
-Run `npx gsync auth status`. If it fails or is not found, skip all gsync behavior silently for the session.
+Run `npx gsync auth status`. Authenticated if the first line says "Authenticated" (ignore token expiry warnings — gsync auto-refreshes). If it fails or is not found, skip all gsync behavior silently for the session.
 
 ### Fetch and merge (step 6)
 
