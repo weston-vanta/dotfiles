@@ -43,6 +43,15 @@ _ai_git() {
   git --git-dir="$(_ai_repo_root)/.git-ai" --work-tree="$(_ai_repo_root)" "$@"
 }
 
+# Stage all .ai-dev files visible to the shadow repo
+# Returns 1 if nothing was staged
+_ai_stage() {
+  local files
+  files=$(_ai_git status -u --porcelain | sed -n 's/^.. //p' | grep '\.ai-dev/')
+  [[ -n "$files" ]] || return 1
+  printf '%s\n' "$files" | while IFS= read -r f; do _ai_git add -- "$f"; done
+}
+
 # Derive the Claude Code transcript directory for the current repo
 # Convention: take absolute repo root path and replace all / with -
 # E.g. /Users/weston/Workspaces/myproject -> ~/.claude/projects/-Users-weston-Workspaces-myproject
@@ -142,8 +151,7 @@ EXCLUDE
     _ai_git remote add origin "$remote_url"
   fi
 
-  if find . -type d -name .ai-dev | grep -q .; then
-    _ai_git add '**/.ai-dev'
+  if _ai_stage; then
     _ai_git commit -m "ai: initial knowledge import"
   fi
 
@@ -233,7 +241,7 @@ _ai_sync() {
   repo_root="$(_ai_repo_root)" || return 1
   cd "$repo_root" || return 1
 
-  _ai_git add '**/.ai-dev'
+  _ai_stage
 
   if _ai_git diff --cached --quiet; then
     echo "Nothing to sync."
