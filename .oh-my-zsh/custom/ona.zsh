@@ -45,25 +45,6 @@ _ona_list() {
       "\(.id) \(.metadata.name)/\($branch) - \(.status.phase | sub("ENVIRONMENT_PHASE_"; ""))"'
 }
 
-# Ensure Gitpod SSH config exists with ControlPath configured
-_ona_ensure_ssh_config() {
-  local ssh_config="$HOME/.ssh/gitpod/config"
-  local ssh_control_path="$HOME/.ssh/gitpod/control"
-
-  if [[ ! -f "$ssh_config" ]]; then
-    echo "Setting up Gitpod SSH config..."
-    gitpod environment ssh-config
-  fi
-
-  if ! grep -q "ControlPath" "$ssh_config" && grep -q "ControlMaster" "$ssh_config"; then
-    echo "Adding ControlPath configuration to SSH config..."
-    sed -i.bak "/ControlMaster/a\\
-  ControlPath $ssh_control_path/%C
-" "$ssh_config"
-    mkdir -p "$ssh_control_path"
-  fi
-}
-
 # Add port forward to ssh_cmd if port is available
 # Usage: _ona_add_port_forward <port>
 # Modifies: ssh_cmd array in calling scope
@@ -165,7 +146,6 @@ _ona_ssh() {
   local environment_id env_name
   _ona_select_environment "$name" || return 1
 
-  _ona_ensure_ssh_config
 
   if $forward; then
     echo "Creating background tunnel to $env_name (id: $environment_id)..."
@@ -245,7 +225,6 @@ _ona_run() {
   local environment_id env_name
   _ona_select_environment "$name" || return 1
 
-  _ona_ensure_ssh_config
 
   ssh "$environment_id.gitpod.environment" "$@"
 }
