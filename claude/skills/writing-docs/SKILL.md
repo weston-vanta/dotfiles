@@ -34,8 +34,8 @@ digraph review_loop {
     "Incorporate feedback" -> "Resolve Drive comments";
     "Resolve Drive comments" -> "Preserve direct edits";
     "Preserve direct edits" -> "Remove //** comments";
-    "Remove //** comments" -> "Update revised date in frontmatter";
-    "Update revised date in frontmatter" -> "Summarize changes to user";
+    "Remove //** comments" -> "Update dates and changelog";
+    "Update dates and changelog" -> "Summarize changes to user";
     "Summarize changes to user" -> "Announce: ready for review";
     "User says done" -> "Return to calling skill";
 }
@@ -43,7 +43,7 @@ digraph review_loop {
 
 ### Step by step
 
-1. **Write the draft** to the agreed-upon file path. A PostToolUse hook runs `gsync upload` — if the hook output contains a Drive link, include it in your announcement (first write only).
+1. **Write the draft** to the agreed-upon file path. Immediately after the `# Title`, include `*Created: YYYY-MM-DD | Last revised: YYYY-MM-DD*` (both set to today on first draft). A PostToolUse hook runs `gsync upload` — if the hook output contains a Drive link, include it in your announcement (first write only).
 2. **Check gsync availability**: `npx gsync auth status`. See [Google Drive Sync](#google-drive-sync).
 3. **Announce:**
    - gsync available: "Draft written to `<path>` and synced to Google Drive: `<link>`. You can review and comment in either place."
@@ -56,7 +56,7 @@ digraph review_loop {
    - Direct edits: intentional changes — **preserve as-is, never revert**.
 8. **If comments or edits contradict each other or existing content**, ask the user to resolve before proceeding. If any `//**` comment is ambiguous, ask for clarification.
 9. **Apply changes**: if gsync is available, run `npx gsync comments resolve-all <path> -y` first (before writing), then incorporate feedback, preserve direct edits, remove `//**` annotations.
-10. **Update** `revised` date in frontmatter — set to `date +%Y-%m-%d`.
+10. **Update dates and changelog**: update "Last revised" date below the title to today. Append a changelog entry to the bottom of the document: `- YYYY-MM-DD: <one-line summary of changes>`. Create the `## Changelog` section on first revision if it doesn't exist.
 11. **Summarize** what changed briefly. Go to step 3.
 
 ### Comment convention

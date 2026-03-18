@@ -32,7 +32,7 @@ Analyze the scoped work and propose how to split it into separate plan documents
 
 - Propose the most relevant `.ai-dev` directory (typically the same as the design doc)
 - Confirm with the user before writing
-- File naming: `YYYY-MM-DD-<topic>-plan.md` (or `-plan-1.md`, `-plan-2.md` for multiple)
+- File naming: `<topic>-plan.md` (or `<topic>-plan-1.md`, `<topic>-plan-2.md` for multiple)
 
 ### 4. Write plans
 

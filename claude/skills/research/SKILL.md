@@ -57,7 +57,7 @@ If no external links are found, note that and move on. Do not skip this step -- 
 
 - Propose the most relevant `.ai-dev` directory for the research doc
 - Confirm with the user before writing
-- File naming: `YYYY-MM-DD-<topic>-research.md`
+- File naming: `<topic>-research.md`
 
 ### 5. Write and review
 

@@ -74,7 +74,7 @@ Confirm section list with the user before drafting.
 
 - Propose the most relevant `.ai-dev` directory
 - Confirm with the user before writing
-- File naming: `YYYY-MM-DD-<topic>-design.md`
+- File naming: `<topic>-design.md`
 
 ### 6. Write and review
 
