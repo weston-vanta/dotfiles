@@ -133,9 +133,11 @@ _ai_init() {
 *
 # Allow directory traversal
 !*/
-# Re-include .ai-dev and contents
+# Re-include .ai-dev and contents (root and nested)
+!.ai-dev
+!.ai-dev/**
 !**/.ai-dev
-!**/.ai-dev/*
+!**/.ai-dev/**
 # Block traversal into heavy/irrelevant directories
 node_modules/
 .git/
