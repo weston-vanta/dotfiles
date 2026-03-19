@@ -57,3 +57,6 @@ theme = catppuccin-frappe.conf
 # Fonts
 font-family = FiraCode Nerd Font Mono
 font-size = 18
+
+# SSH integration: automatically copy terminfo to remote hosts and set TERM
+shell-integration-features = ssh-terminfo,ssh-env
