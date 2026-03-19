@@ -157,9 +157,7 @@ _ona_ssh() {
     echo "Background tunnel established. Use 'ona ssh exit' to close."
   else
     echo "Connecting to $env_name (id: $environment_id)..."
-    [[ -n "$TMUX" ]] && tmux set-option -p @remote_env_name "$env_name"
-    ssh "$environment_id.gitpod.environment"
-    [[ -n "$TMUX" ]] && tmux set-option -pu @remote_env_name
+    ssh "$environment_id.gitpod.environment" -t "tmux new-session -A -s '${env_name}'"
   fi
 }
 
