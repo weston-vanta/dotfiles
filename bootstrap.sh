@@ -128,4 +128,13 @@ echo "Setting zsh as the default shell."
 sudo chsh "$(id -un)" --shell "/usr/bin/zsh"
 
 echo
+echo "==> Running install scripts"
+for install_script in "$DOTFILES_DIR/install"/*.zsh; do
+  if [[ -x "$install_script" ]]; then
+    echo "Running: $(basename "$install_script")"
+    zsh "$install_script"
+  fi
+done
+
+echo
 echo "Done!"
