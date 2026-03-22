@@ -59,9 +59,17 @@ If no external links are found, note that and move on. Do not skip this step -- 
 - Confirm with the user before writing
 - File naming: `<topic>-research.md`
 
-### 5. Write and review
+**Do not proceed past this step until the user confirms the location.**
 
-Write the research document with frontmatter:
+### 5. Hand off to writing-docs
+
+STOP. Do not write the document yourself. Do not present findings in chat.
+
+Invoke the `writing-docs` skill. It will write the draft to the file path confirmed in step 4 and run the review loop with the user. Provide it:
+
+- The confirmed file path
+- Your research findings (structured per the [Document Structure](#document-structure) below)
+- The frontmatter format:
 
 ```yaml
 ---
@@ -71,9 +79,7 @@ type: research
 ---
 ```
 
-Cite which `.ai-dev/` directories, source files, and external resources your findings draw from.
-
-**GATE: All output goes through writing-docs.** Do not present research findings in chat. Write the document to the agreed-upon file path and invoke the writing-docs skill for the review loop. The user reviews and refines the document on disk, not in conversation.
+- Citations: which `.ai-dev/` directories, source files, and external resources your findings draw from
 
 ### 6. Handoff
 
