@@ -251,17 +251,12 @@ _ai_sync() {
   fi
 
   # Generate commit message
-  local first_line="ai: update knowledge $(date '+%Y-%m-%d %H:%M')"
-
-  local diff description
+  local diff commit_msg
   diff=$(_ai_git diff --cached)
-  description=$(printf '%s' "$diff" | claude -p "Summarize the following knowledge file changes in 1-2 concise sentences. Output ONLY the summary, no preamble." 2>/dev/null) || description=""
+  commit_msg=$(printf '%s' "$diff" | claude -p "Write a git commit message for these knowledge file changes. First line: short summary (max 72 chars). Then a blank line, then 1-2 sentences of detail if needed. Output ONLY the commit message, no preamble." 2>/dev/null) || commit_msg=""
 
-  local commit_msg="$first_line"
-  if [[ -n "$description" ]]; then
-    commit_msg="${first_line}
-
-${description}"
+  if [[ -z "$commit_msg" ]]; then
+    commit_msg="ai: update knowledge $(date '+%Y-%m-%d %H:%M')"
   fi
 
   _ai_git commit -m "$commit_msg"
