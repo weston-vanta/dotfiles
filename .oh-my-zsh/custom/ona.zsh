@@ -109,7 +109,7 @@ _ona_start() {
 }
 
 # SSH into a gitpod environment with proper environment setup
-# Usage: ona ssh [-f|--forward [-p port]...] [env-name]
+# Usage: ona ssh [-f|--forward [-p port]...] [-n|--name session] [env-name]
 #        ona ssh exit  — close all forwarded port tunnels
 _ona_ssh() {
   if [[ "$1" == "exit" ]]; then
@@ -118,6 +118,7 @@ _ona_ssh() {
   fi
 
   local forward=false
+  local session_suffix=""
   local name=""
   local -a ports=()
 
@@ -126,6 +127,10 @@ _ona_ssh() {
       -f|--forward)
         forward=true
         shift
+        ;;
+      -n|--name)
+        session_suffix="$2"
+        shift 2
         ;;
       -p|--port)
         ports+=("$2")
@@ -156,8 +161,10 @@ _ona_ssh() {
     "${ssh_cmd[@]}" "$environment_id.gitpod.environment"
     echo "Background tunnel established. Use 'ona ssh exit' to close."
   else
+    local session_name="${env_name}"
+    [[ -n "$session_suffix" ]] && session_name="${env_name}-${session_suffix}"
     echo "Connecting to $env_name (id: $environment_id)..."
-    ssh "$environment_id.gitpod.environment" -t "tmux new-session -A -s '${env_name}'"
+    ssh "$environment_id.gitpod.environment" -t "tmux new-session -A -s '${session_name}'"
   fi
 }
 
@@ -259,9 +266,10 @@ Manage Ona environments with tmux niceties
 Subcommands:
   list, ls                     List all Gitpod environments
   start [name]                 Start an environment (interactive if no name provided)
-  ssh [-f|--forward] [-p port]... [name]
+  ssh [-f|--forward] [-p port]... [-n|--name session] [name]
                                SSH into an environment (interactive if no name provided)
                                -f, --forward: Create background tunnel with port forwarding (no shell)
+                               -n, --name: Suffix for tmux session name (<env>-<session>)
                                -p, --port: Forward specific port(s) (default: 8080,9000,9223)
   ssh exit                     Close all active SSH tunnels to Ona environments
   pane [-h|-v] [name]          Open a new tmux pane connected to an environment
@@ -276,7 +284,8 @@ Examples:
   ona list                        # List all Gitpod environments
   ona start research              # Start the 'research' environment
   ona ssh research                # SSH into the 'research' environment (no port forwarding)
-  ona ssh --forward research      # Create background tunnel to 'research' (default ports)
+  ona ssh --name debug research       # Session named 'research/main-debug'
+  ona ssh --forward research          # Create background tunnel to 'research' (default ports)
   ona ssh --forward -p 3000 research  # Tunnel only port 3000 to 'research'
   ona ssh exit                     # Close all active SSH tunnels
   ona pane                        # Open new pane with interactive selection (requires fzf)
