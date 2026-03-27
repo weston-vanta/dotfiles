@@ -68,7 +68,7 @@ Users provide feedback in two ways:
 
 ## Google Drive Sync
 
-`gsync` syncs markdown files to Google Drive. Upload is handled automatically by a PostToolUse hook — the skill only handles availability detection, fetching, and merging.
+`gsync` syncs markdown files to Google Drive. Upload is handled automatically by a PostToolUse hook on Write/Edit — **never run `gsync upload` manually**. The skill only handles availability detection, fetching, and merging.
 
 ### Availability check (step 2)
 

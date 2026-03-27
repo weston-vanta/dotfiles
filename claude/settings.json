@@ -1,4 +1,14 @@
 {
+  "permissions": {
+    "allow": [
+      "Read(**/.ai-dev/**)",
+      "Write(**/.ai-dev/**)",
+      "Edit(**/.ai-dev/**)",
+      "Glob(**/.ai-dev/**)",
+      "Grep(**/.ai-dev/**)"
+    ]
+  },
+  "model": "opus[1m]",
   "hooks": {
     "PostToolUse": [
       {
@@ -13,19 +23,9 @@
       }
     ]
   },
-  "model": "opus[1m]",
   "statusLine": {
     "type": "command",
     "command": "input=$(cat); model=$(echo \"$input\" | jq -r '.model.display_name'); total_in=$(echo \"$input\" | jq -r '.context_window.total_input_tokens'); total_out=$(echo \"$input\" | jq -r '.context_window.total_output_tokens'); ctx_size=$(echo \"$input\" | jq -r '.context_window.context_window_size'); used_pct=$(echo \"$input\" | jq -r '.context_window.used_percentage // \"0\"'); total_tok=$((total_in + total_out)); model_id=$(echo \"$input\" | jq -r '.model.id'); if [[ \"$model_id\" == *\"opus\"* ]]; then cost=$(echo \"scale=4; ($total_in * 15 + $total_out * 75) / 1000000\" | bc); elif [[ \"$model_id\" == *\"haiku\"* ]]; then cost=$(echo \"scale=4; ($total_in * 0.80 + $total_out * 4) / 1000000\" | bc); else cost=$(echo \"scale=4; ($total_in * 3 + $total_out * 15) / 1000000\" | bc); fi; printf \"%s | Tokens: %'d/%'d (%s%%) | Cost: \\$%.4f\" \"$model\" \"$total_tok\" \"$ctx_size\" \"$used_pct\" \"$cost\""
-  },
-  "permissions": {
-    "allow": [
-      "Read(**/.ai-dev/**)",
-      "Write(**/.ai-dev/**)",
-      "Edit(**/.ai-dev/**)",
-      "Glob(**/.ai-dev/**)",
-      "Grep(**/.ai-dev/**)"
-    ]
   },
   "enabledPlugins": {
     "rust-analyzer-lsp@claude-plugins-official": true,
