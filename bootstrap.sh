@@ -138,8 +138,12 @@ else
 fi
 
 echo
+echo "==> Installing Homebrew"
+bash "$DOTFILES_DIR/install-scripts/brew.sh"
+
+echo
 echo "==> Running install scripts"
-for install_script in "$DOTFILES_DIR/install"/*.zsh; do
+for install_script in "$DOTFILES_DIR/install-scripts"/*.zsh; do
   if [[ -x "$install_script" ]]; then
     echo "Running: $(basename "$install_script")"
     zsh "$install_script"

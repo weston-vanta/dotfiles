@@ -105,3 +105,8 @@ source $ZSH/oh-my-zsh.sh
 
 # Environment variables (no secrets)
 export GITHUB_USER=weston-vanta
+
+# Linux: put Homebrew on the PATH
+if [[ -f /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv zsh)"
+fi
