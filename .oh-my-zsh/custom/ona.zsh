@@ -44,8 +44,7 @@ ona() {
 _ona_list() {
   gitpod environment list -o json | \
     jq -r '.[] |
-      (.status.content.git.branch // "unknown") as $branch |
-      "\(.id) \(.metadata.name)/\($branch) - \(.status.phase | sub("ENVIRONMENT_PHASE_"; ""))"'
+      "\(.id) \(.metadata.name) - \(.status.phase | sub("ENVIRONMENT_PHASE_"; ""))"'
 }
 
 # Add port forward to ssh_cmd if port is available
@@ -81,7 +80,7 @@ _ona_select_environment() {
   else
     selected=$(ona list | while IFS= read -r line; do
       local entry_name="${line#* }"
-      entry_name="${entry_name%%/*}"
+      entry_name="${entry_name% - *}"
       if [[ "$entry_name" == "$name" ]]; then
         echo "$line"
         break
@@ -383,6 +382,9 @@ _ona_new() {
       return 1
     fi
   fi
+
+  echo "Initializing ai-dev knowledge tracking..."
+  ona run "$env_name" "cd /workspaces/obsidian && zsh -c 'source ~/.zshrc && ai init https://github.com/weston-vanta/obsidian-ai-dev/tree/main/.ai-dev'"
 
   if $open_in_vscode; then
     ona open vscode "$env_name"

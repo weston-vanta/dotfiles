@@ -147,8 +147,10 @@ EXCLUDE
 
   _ai_ensure_main_excludes
 
-  local remote_url
-  vared -p "Remote URL for shadow repo (blank to skip): " -c remote_url
+  local remote_url="${1:-}"
+  if [[ -z "$remote_url" ]]; then
+    vared -p "Remote URL for shadow repo (blank to skip): " -c remote_url
+  fi
   if [[ -n "$remote_url" ]]; then
     _ai_git remote add origin "$remote_url"
   fi
