@@ -128,6 +128,16 @@ echo "Setting zsh as the default shell."
 sudo chsh "$(id -un)" --shell "/usr/bin/zsh"
 
 echo
+echo "==> Symlinking Ona secrets"
+if [[ -d /usr/local/secrets ]]; then
+  if [[ -f /usr/local/secrets/gsync_token ]]; then
+    create_symlink /usr/local/secrets/gsync_token "$HOME/.config/gsync/token.json"
+  fi
+else
+  echo "No secrets directory found, skipping"
+fi
+
+echo
 echo "==> Running install scripts"
 for install_script in "$DOTFILES_DIR/install"/*.zsh; do
   if [[ -x "$install_script" ]]; then
