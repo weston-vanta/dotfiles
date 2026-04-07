@@ -44,17 +44,19 @@ Incorporate subagent findings into your understanding before proceeding to clari
 Follow the brainstorming pattern:
 
 - Ask questions **one at a time**
-- **Multiple choice preferred** when possible
+- **Multiple choice preferred** when possible (use the AskUserQuestion tool)
 - Probe for missed requirements the user hasn't considered
 - Explore ambiguous requirements until they're concrete
 - Identify constraints (technical, organizational, timeline)
 - Reference findings from external resources when relevant
 
-### 4. Propose sections
+### 4. Propose in sections
 
-Present which sections the design doc will include based on the project. Only include relevant sections -- simple projects skip irrelevant ones.
+Present a summary of the following sections to the user, one by one. After each, ask for any corrections before proceeding.
 
-**Canonical sections** (include when relevant):
+You must present every section for every design -- if a section is not relevant, present your reasoning to the user for confirmation.
+
+**Canonical sections**:
 
 - Overview / Problem Statement
 - Requirements Summary
@@ -68,8 +70,6 @@ Present which sections the design doc will include based on the project. Only in
 - Deployment Strategy
 - Project-specific sections as needed
 
-Confirm section list with the user before drafting.
-
 ### 5. Confirm output location
 
 - Propose the most relevant `.ai-dev` directory
@@ -78,7 +78,9 @@ Confirm section list with the user before drafting.
 
 ### 6. Write and review
 
-- Write the design document with frontmatter:
+**STOP**: You must use /writing-docs to write the design doc and manage the review loop.
+
+Ensure the following frontmatter is included:
 
 ```yaml
 ---
@@ -89,8 +91,6 @@ links:
   research: <path-to-research-doc>
 ---
 ```
-
-- **REQUIRED SUB-SKILL:** Use writing-docs for the review loop
 
 ### 7. Handoff
 

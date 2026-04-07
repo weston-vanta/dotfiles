@@ -18,6 +18,7 @@ Investigate a codebase question or topic and produce a reviewed markdown researc
 - Read any provided context (links to docs, files, prior research)
 - Ask clarifying questions one at a time to narrow the research scope
 - Multiple choice preferred when possible
+- Use the AskUserQuestion tool
 
 ### 2. Investigate
 
@@ -32,6 +33,12 @@ Investigate a codebase question or topic and produce a reviewed markdown researc
 - Provide **background and context** -- why does this code exist? What problem does it solve? What came before?
 - Quote **relevant comments, commit messages, and PR descriptions** verbatim when they add context
 - Don't just summarize -- give the reader the primary sources inline
+
+**Context matters.** The research document must provide enough context, concisely, to orient readers unfamiliar with the systems in question.
+
+- To provide context, you must understand the _systems_ involved
+- How do they relate to one another?
+- What business purpose do they serve?
 
 ### 3. Gather external resources
 
@@ -92,6 +99,7 @@ If yes, invoke the design skill, passing the research doc path.
 ## Document Structure
 
 - **Summary** -- key findings in 2-3 sentences
+- **Background** -- provide context necessary for understanding the rest of the doc
 - **Findings** -- organized by topic, citing sources
 - **Open Questions** -- anything unresolved that may affect design
 - **References** -- list of files, `.ai-dev` entries, and external resources consulted
