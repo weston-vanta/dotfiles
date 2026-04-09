@@ -1,13 +1,15 @@
 ---
 name: plan
-description: Use when you have a completed design document and need to break it into fine-grained implementation tasks before writing code
+description: Use when you have a PRD, research, and design for a multi-step task, before touching any code.
 ---
 
 # Plan
 
 ## Overview
 
-Take completed research, a design document, and a user-specified scope of work. Produce one or more fine-grained implementation plan documents with TDD-structured tasks. Every design requirement must map to tests.
+Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+
+Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
 
 **Announce at start:** "I'm using the plan skill to create implementation plans."
 
@@ -15,18 +17,16 @@ Take completed research, a design document, and a user-specified scope of work. 
 
 ### 1. Read inputs
 
-- Read the research document
-- Read the design document
-- Read the user's scope of work (which subset of the design to plan now)
+- Read the PRD.
+- Read the research document.
+- Read the design document.
+- Read the user's scope of work, if any.
 
-### 2. Propose work groupings
+### 2. Scope check
 
-Analyze the scoped work and propose how to split it into separate plan documents.
+If the design covers multiple independent subsystems, suggest splitting this into multiple plans. Each plan should produce working, testable, shippable software on its own.
 
-- **Favor logically independent groupings** that can be implemented in parallel
-- Do not separate by component unless each group is also logically independent
-- Present proposed groupings to the user and wait for approval
-- A single plan document is fine when the scope is small enough
+If the user agrees to multiple plans, propose plan groupings for user refinement. Once approved you may proceed.
 
 ### 3. Confirm output location
 
@@ -44,108 +44,132 @@ created: YYYY-MM-DD
 revised: YYYY-MM-DD
 type: plan
 links:
+  prd: <path-to-prd>
   research: <path-to-research-doc>
   design: <path-to-design-doc>
 ---
 ```
+**IMPORTANT:** do NOT use writing-docs to write the first draft. You will complete a self-review (step 5), only then use writing-docs for human-in-the-loop review.
 
-**REQUIRED SUB-SKILL:** Use writing-docs for the review loop on each plan document.
+### 5. Self-Review
 
-### 5. Handoff
+After writing the complete plan, look at the PRD, research, and design with fresh eyes and check the plan against it. This is a checklist you run yourself — not a subagent dispatch.
+
+**1. Design spec coverage:** Skim each section/requirement in the design. Can you point to a task that implements it? List any gaps.
+
+**2. Placeholder scan:** Search your plan for red flags — any of the patterns from the "No Placeholders" section above. Fix them.
+
+**3. Type consistency:** Do the types, method signatures, and property names you used in later tasks match what you defined in earlier tasks? A function called `clearLayers()` in Task 3 but `clearFullLayers()` in Task 7 is a bug.
+
+If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
+
+### 6. Human-in-the-loop review
+
+Invoke `/skill writing-docs` to manage the review loop with the user.
+
+### 7. Handoff
 
 When all plans are approved:
 
-"Plans complete. Ready to implement?"
+Announce: "Plans complete. Ready to implement with subagents?"
 
-## Task Structure
+If yes:
+- **REQUIRED SUB-SKILL:** Use superpowers:subagent-driven-development.
+- Fresh subagent per task + two-stage review.
 
-Each task in the plan follows this structure:
+## Plan Structure
+
+Before defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.
+
+- Design units with clear boundaries and well-defined interfaces. Each file should have one clear responsibility.
+- You reason best about code you can hold in context at once, and your edits are more reliable when files are focused. Prefer smaller, focused files over large ones that do too much.
+- Files that change together should live together. Split by responsibility, not by technical layer.
+- In existing codebases, follow established patterns. If the codebase uses large files, don't unilaterally restructure - but if a file you're modifying has grown unwieldy, including a split in the plan is reasonable.
+
+This structure informs the task decomposition. Each task should produce self-contained changes that make sense independently.
+
+### Bite-sized task granularity
+
+**Each step is one action (2-5 minutes):**
+- "Write the failing test" - step
+- "Run it to make sure it fails" - step
+- "Implement the minimal code to make the test pass" - step
+- "Run the tests and make sure they pass" - step
+- "Commit" - step
+
+### Plan Document Header
+
+**Every plan MUST start with this header:**
 
 ```markdown
-### Task N: [Descriptive Name]
+# [Feature Name] Implementation Plan
 
-**Goal:** One sentence describing what this task accomplishes.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** [One sentence describing what this builds]
+
+**Architecture:** [2-3 sentences about approach]
+
+**Tech Stack:** [Key technologies/libraries]
+
+---
+```
+
+### Task Structure
+
+````markdown
+## Task N: [Component Name]
 
 **Files:**
 - Create: `exact/path/to/file.py`
 - Modify: `exact/path/to/existing.py:123-145`
 - Test: `tests/exact/path/to/test.py`
 
-**Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
-\```python
+```python
 def test_specific_behavior():
     result = function(input)
     assert result == expected
-\```
+```
 
-**Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/path/test.py::test_name -v`
 Expected: FAIL with "function not defined"
 
-**Step 3: Write minimal implementation**
+- [ ] **Step 3: Write minimal implementation**
 
-\```python
+```python
 def function(input):
     return expected
-\```
+```
 
-**Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/path/test.py -v`
-Expected: ALL PASS
+Run: `pytest tests/path/test.py::test_name -v`
+Expected: PASS
 
-**Step 5: Commit**
+- [ ] **Step 5: Commit**
 
-\```bash
+```bash
 git add tests/path/test.py src/path/file.py
 git commit -m "feat: add specific feature"
-\```
 ```
+````
 
-## Planning Rules
+### No Placeholders
 
-### TDD enforcement
+Every step must contain the actual content an engineer needs. These are **plan failures** — never write them:
+- "TBD", "TODO", "implement later", "fill in details"
+- "Add appropriate error handling" / "add validation" / "handle edge cases"
+- "Write tests for the above" (without actual test code)
+- "Similar to Task N" (repeat the code — the engineer may be reading tasks out of order)
+- Steps that describe what to do without showing how (code blocks required for code steps)
+- References to types, functions, or methods not defined in any task
 
-- TDD is the default for all plans
-- Only skip TDD if the user explicitly agrees the work is trivial
-- Surface the TDD decision: "This plan will use TDD. The scope is simple enough that we could skip it -- your preference?"
-- **Every requirement from the design must map to at least one test** (unit, integration, or end-to-end)
-
-### Task granularity
-
-Each step is one action:
-- "Write the failing test" -- one step
-- "Run it to make sure it fails" -- one step
-- "Implement the minimal code" -- one step
-- "Run the tests" -- one step
-
-### Commits
-
-- Commits are **explicit steps** in the plan, not implied
-- Place commits at **logical boundaries** that produce consistent, reviewable units of work
-- Not every test cycle needs a commit -- group related changes when it makes sense
-- Commit messages should be meaningful and conventional
-
-### Detail level
-
-- **Exact file paths** for every file touched
-- **Complete code** in the plan (not "add validation here")
-- **Exact commands** with expected output for verification steps
-- **Line ranges** when modifying existing files
-
-### Requirement traceability
-
-Include a traceability section at the top of each plan:
-
-```markdown
-## Requirement Traceability
-
-| Requirement | Test(s) | Task(s) |
-|------------|---------|---------|
-| R1: User can log in | test_login_success, test_login_failure | Task 2, Task 3 |
-| R2: Sessions expire | test_session_expiry | Task 5 |
-```
-
-Every requirement from the design doc must appear in this table with at least one test.
+### Remember
+- Exact file paths always
+- Complete code in every step — if a step changes code, show the code
+- Exact commands with expected output
+- DRY, YAGNI, TDD, frequent commits
