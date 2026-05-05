@@ -6,7 +6,8 @@
       "Edit(**/.ai-dev/**)",
       "Glob(**/.ai-dev/**)",
       "Grep(**/.ai-dev/**)"
-    ]
+    ],
+    "defaultMode": "auto"
   },
   "model": "opus[1m]",
   "hooks": {

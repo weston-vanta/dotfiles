@@ -182,7 +182,7 @@ _ona_open_ssh() {
     local session_name="${env_name}"
     [[ -n "$session_suffix" ]] && session_name="${env_name}-${session_suffix}"
     echo "Connecting to $env_name (id: $environment_id)..."
-    ssh "$environment_id.gitpod.environment" -t "tmux new-session -A -s '${session_name}'"
+    ssh "$environment_id.gitpod.environment" -t "TERM=xterm-256color tmux new-session -A -s '${session_name}'"
   fi
 }
 
@@ -301,6 +301,8 @@ _ona_new_jira() {
     echo "Error: Failed to generate branch name"
     return 1
   fi
+  # Enforce lowercase letters, digits, and hyphens only
+  desc=$(printf '%s' "$desc" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
   branch_name="weston/$ticket-$desc"
   env_name="$desc"
   echo "Branch: $branch_name"
