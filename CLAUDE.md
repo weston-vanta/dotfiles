@@ -46,3 +46,17 @@ There is no build system, test suite, or linter for the dotfiles themselves.
 - `prs` uses GitHub's GraphQL API via `gh api graphql` for rich PR data, and REST API for simpler queries.
 - The `prs` and `ona` commands use `fzf` for interactive selection when no argument is given.
 - Heredocs and `printf` are preferred over `echo` for piping content to `jq` and `glow`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context (one `CONTEXT.md` + `docs/adr/` at the repo root). See `docs/agents/domain.md`.
