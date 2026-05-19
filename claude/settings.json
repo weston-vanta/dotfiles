@@ -1,11 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Read(**/.ai-dev/**)",
-      "Write(**/.ai-dev/**)",
-      "Edit(**/.ai-dev/**)",
-      "Glob(**/.ai-dev/**)",
-      "Grep(**/.ai-dev/**)"
+      "Read(**/ai-artifacts/**)",
+      "Write(**/ai-artifacts/**)",
+      "Edit(**/ai-artifacts/**)",
+      "Glob(**/ai-artifacts/**)",
+      "Grep(**/ai-artifacts/**)"
     ],
     "defaultMode": "auto"
   },
@@ -18,6 +18,17 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/gsync-upload.sh",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/ai-artifacts-sync.sh",
             "timeout": 60
           }
         ]

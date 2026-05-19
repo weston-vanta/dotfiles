@@ -6,7 +6,7 @@ prs() {
   local subcommand="$1"
 
   case "$subcommand" in
-    list|open|view|research)
+    list|open|view)
       shift
       "_prs_$subcommand" "$@"
       ;;
@@ -446,71 +446,6 @@ _prs_view_save() {
   echo "PR details saved to $output_file"
 }
 
-# Research a PR: create worktree, fetch PR context, run Claude research
-# Usage: prs research [team-name] [pr-number]
-_prs_research() {
-  local pr_number=""
-  local team=""
-
-  while [[ $# -gt 0 ]]; do
-    if [[ "$1" =~ ^[0-9]+$ ]]; then
-      pr_number="$1"
-    else
-      team="$1"
-    fi
-    shift
-  done
-
-  command -v gh &> /dev/null || { echo "Error: GitHub CLI (gh) not found" >&2; return 1; }
-  command -v claude &> /dev/null || { echo "Error: claude CLI not found" >&2; return 1; }
-
-  if [[ -z "$pr_number" ]]; then
-    pr_number=$(_prs_select_fzf "Select PR to research: " "$team") || return 1
-  fi
-
-  # Get the PR branch name
-  local branch
-  branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName' 2>&1) || {
-    echo "Error: Could not fetch PR #$pr_number" >&2
-    echo "$branch" >&2
-    return 1
-  }
-
-  # Create worktree as sibling of repo root
-  local repo_root
-  repo_root=$(git rev-parse --show-toplevel) || { echo "Error: Not in a git repository" >&2; return 1; }
-  local repo_name=$(basename "$repo_root")
-  local worktree_path="$(dirname "$repo_root")/${repo_name}-pr-${pr_number}"
-
-  git fetch origin "$branch" || { echo "Error: Failed to fetch branch '$branch'" >&2; return 1; }
-
-  git worktree add "$worktree_path" "origin/$branch" || {
-    echo "Error: Failed to create worktree at $worktree_path" >&2
-    return 1
-  }
-
-  echo "Created worktree at $worktree_path"
-
-  # Save PR context to the worktree
-  local pr_file="$worktree_path/pr-${pr_number}.md"
-  _prs_view_render "VantaInc" "VantaInc/obsidian" "$pr_number" "$pr_file"
-
-  # Run Claude research from the worktree directory
-  echo "Running Claude research on PR #$pr_number..."
-  (cd "$worktree_path" && claude --permission-mode bypassPermissions -p "/pr-research Build background understanding of the systems and codebase areas involved in pr-${pr_number}.md. Focus on system context, motivation, and recent history — not assessment of the changes.")
-
-  # Find the generated research doc
-  local research_doc
-  research_doc=$(find "$worktree_path" -path '*/.ai-dev/*-research.md' -newer "$pr_file" 2>/dev/null | head -1)
-
-  if [[ -n "$research_doc" ]]; then
-    printf '\nResearch report: %s\n' "$research_doc"
-  else
-    printf '\nWorktree: %s\n' "$worktree_path"
-    echo "PR context: $pr_file"
-  fi
-}
-
 # Show help message
 _prs_help() {
   cat <<EOF
@@ -533,11 +468,6 @@ Subcommands:
                         team-name: optional filter for interactive selection (default: "mine")
                         pr-number: optional PR number (uses fzf for interactive selection if not provided)
                         --output/-o: save PR details to a markdown file
-  research [team-name] [pr-number]
-                        Create a worktree and run Claude research for PR review
-                        Creates a sibling worktree, fetches PR context, and runs /research
-                        team-name: optional filter for interactive selection
-                        pr-number: optional PR number (uses fzf for interactive selection if not provided)
   help                  Show this help message
 
 Examples:
@@ -553,8 +483,6 @@ Examples:
   prs view                      # Interactively select from your PRs to view
   prs view backend-team         # Interactively select from backend-team's PRs to view
   prs view 1234 -o pr.md       # View PR #1234 and save details to pr.md
-  prs research 1234             # Create worktree and run Claude research on PR #1234
-  prs research                  # Interactively select a PR to research
 
 Notes:
   - prs open saves PR context to PR_CONTEXT.md in the repo root (add to .gitignore)

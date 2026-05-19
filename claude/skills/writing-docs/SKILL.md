@@ -5,14 +5,30 @@ description: Use when a skill needs to produce a markdown document with iterativ
 
 # Writing Docs
 
-Iterative human-in-the-loop document review. Write a markdown doc, wait for human feedback, incorporate changes, repeat until approved.
+Iterative human-in-the-loop document review. Write a markdown doc into the sibling `ai-artifacts/` repo, wait for human feedback, incorporate changes, repeat until approved.
+
+See `~/.claude/resources/ai-artifacts.md` for the full layout. Docs are never written into the host repo's working tree.
+
+## Resolve the path before drafting
+
+1. **Find the host repo**: `git rev-parse --show-toplevel`. If the current directory isn't a git repo, ask the user where the work lives — don't guess.
+
+2. **Find the sibling artifacts repo**: look for `<workspace>/ai-artifacts/.git`, where `<workspace>` is the parent dir of the host repo. If it's missing, tell the user to run `/setup-ai-artifacts` first, then stop.
+
+3. **Determine the feature slug** (once per session, then reuse):
+   - Look at the current git branch name, the conversation context, and existing subdirs under `ai-artifacts/<host-repo>/`.
+   - Propose a kebab-case slug and confirm with the user. If the user is already working on a feature that has artifacts, prefer that slug — don't create a duplicate.
+   - Cache the confirmed slug for the rest of the session.
+
+4. **Determine the topic**: `research`, `design`, `plan`, etc. — whatever the calling skill (or user) is asking for. One file per topic, flat inside the feature dir.
+
+5. **Final path**: `<workspace>/ai-artifacts/<host-repo-slug>/<feature-slug>/<topic>.md`.
 
 ## The Review Loop
 
 1. **Check gsync availability**: `npx gsync auth status`. Authenticated if the first line says "Authenticated" (ignore token expiry warnings — gsync auto-refreshes). If it fails or is not found, skip all gsync behavior silently for the session.
 
 2. **Write the draft**
-   - If there is no agreed-upon file path, prompt for one.
    - Immediately after the `# Title`, include `*Created: YYYY-MM-DD | Last revised: YYYY-MM-DD*` (both set to today on first draft).
 
 3. **Announce:**
@@ -47,3 +63,7 @@ Users may provide feedback in three ways:
 - **Drive comments** — feedback provided directly in Google Drive.
 - **`//**` comments** — inline annotations: `Some text. //** comment here`
 - **Direct edits** — changes the user made themselves. Intentional; never revert.
+
+## Session end
+
+You don't need to commit or push the artifacts repo — the SessionEnd hook handles that automatically. Just leave the file in its final state on disk.

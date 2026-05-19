@@ -385,9 +385,6 @@ _ona_new() {
     fi
   fi
 
-  echo "Initializing ai-dev knowledge tracking..."
-  ona run "$env_name" "cd /workspaces/obsidian && zsh -c 'source ~/.zshrc && ai init https://github.com/weston-vanta/obsidian-ai-dev/tree/main/.ai-dev'"
-
   if $open_in_vscode; then
     ona open vscode "$env_name"
   else

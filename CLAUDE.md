@@ -32,13 +32,12 @@ There is no build system, test suite, or linter for the dotfiles themselves.
 | `ona.zsh` | `ona` | Gitpod/ONA environment management with SSH tunneling | `ssh`, `fzf` |
 | `git.zsh` | `gg` | Interactive git branch switching | `fzf` |
 | `imageutils.zsh` | `dotviu` | Render Graphviz `.dot` files in terminal | `graphviz`, `viu` |
-| `ai.zsh` | `ai` | AI knowledge management (extract from transcripts, sync to shadow repo) | `jq`, `claude`, `git` |
 
 **Neovim** uses LazyVim distribution with Lazy.nvim package manager. Custom plugin configs go in `.config/nvim/lua/plugins/`. The colorscheme is set in `.config/nvim/lua/config/lazy.lua`.
 
 **tmux** uses `Ctrl+Space` as prefix (not `Ctrl+b`). Pane borders show remote environment name when SSH'd into one. Config at `.config/tmux/tmux.conf`.
 
-**Claude Code** config lives in `claude/` (no dot, to distinguish from project-level `.claude/` directories) and is symlinked as individual files into `~/.claude/` (not the whole directory, since `~/.claude/` contains transient data like history and sessions). The `ai` command manages knowledge extraction from Claude Code transcripts into `.ai-dev/knowledge.md` files, tracked in a shadow git repo (`.git-ai`).
+**Claude Code** config lives in `claude/` (no dot, to distinguish from project-level `.claude/` directories) and is symlinked as individual files into `~/.claude/` (not the whole directory, since `~/.claude/` contains transient data like history and sessions). Agent-generated artifacts (research, design, plan docs) are written to a sibling `ai-artifacts/` git repo rather than into host repos — see `claude/resources/ai-artifacts.md`.
 
 ## Conventions
 
