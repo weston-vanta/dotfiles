@@ -15,8 +15,10 @@ A personal dotfiles repository that manages a complete development environment w
 
 The bootstrap script symlinks everything from this repo into `$HOME`:
 - `.config/*` directories → `~/.config/`
-- `claude/` contents (settings, prompts, skills, hooks) → `~/.claude/` (individual files/dirs, not the whole directory)
+- `agents/AGENTS.md` → `~/.claude/CLAUDE.md`, `agents/claude/settings.json` → `~/.claude/settings.json` (individual files, not the whole directory, since `~/.claude/` holds transient data)
 - `.gitconfig`, `.oh-my-zsh`, `.zshrc` → `~/`
+
+It then runs `install-scripts/*.zsh`, which install Neovim and flow.
 
 There is no build system, test suite, or linter for the dotfiles themselves.
 
@@ -37,7 +39,7 @@ There is no build system, test suite, or linter for the dotfiles themselves.
 
 **tmux** uses `Ctrl+Space` as prefix (not `Ctrl+b`). Pane borders show remote environment name when SSH'd into one. Config at `.config/tmux/tmux.conf`.
 
-**Claude Code** config lives in `claude/` (no dot, to distinguish from project-level `.claude/` directories) and is symlinked as individual files into `~/.claude/` (not the whole directory, since `~/.claude/` contains transient data like history and sessions). Agent-generated artifacts (research, design, plan docs) are written to a sibling `ai-artifacts/` git repo rather than into host repos — see `claude/resources/ai-artifacts.md`.
+**Agent config** lives in `agents/` (no dot, to distinguish from project-level `.claude/` directories). `agents/AGENTS.md` holds harness-neutral, user-scoped rules and is symlinked to `~/.claude/CLAUDE.md`; harness-specific config sits in a subdirectory (`agents/claude/settings.json`). Agent *skills* are deliberately not in this repo — they belong to [flow](https://github.com/weston-vanta/flow), which `install-scripts/flow.zsh` clones to `~/.flow/source` and installs from there. Everything flow produces lives under `~/.flow`, never in host repos.
 
 ## Conventions
 
@@ -45,17 +47,3 @@ There is no build system, test suite, or linter for the dotfiles themselves.
 - `prs` uses GitHub's GraphQL API via `gh api graphql` for rich PR data, and REST API for simpler queries.
 - The `prs` and `ona` commands use `fzf` for interactive selection when no argument is given.
 - Heredocs and `printf` are preferred over `echo` for piping content to `jq` and `glow`.
-
-## Agent skills
-
-### Issue tracker
-
-Issues live as markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Default canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context (one `CONTEXT.md` + `docs/adr/` at the repo root). See `docs/agents/domain.md`.

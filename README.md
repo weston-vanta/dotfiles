@@ -9,6 +9,7 @@ This repository contains configuration files that automatically set up a consist
 - **tmux** terminal multiplexer (Ctrl+Space prefix)
 - **Neovim** with LazyVim distribution
 - **Git** user configuration
+- **[flow](https://github.com/weston-vanta/flow)** agent skill pipeline, installed to `~/.flow`
 
 ## Installation
 
@@ -28,4 +29,3 @@ The bootstrap script creates symlinks from this repository to your home director
 - `ona` -- interact with Ona environments (`ona help` for usage).
 - `gg` -- interactive git branch switching via fzf.
 - `dotviu` -- render Graphviz `.dot` files in the terminal.
-- `ai` -- AI knowledge management (extract from transcripts, sync to shadow repo).

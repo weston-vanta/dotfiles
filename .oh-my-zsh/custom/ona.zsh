@@ -16,6 +16,9 @@ ona() {
     open)
       _ona_open "$@"
       ;;
+    close)
+      _ona_close "$@"
+      ;;
     run)
       _ona_run "$@"
       ;;
@@ -112,7 +115,6 @@ _ona_start() {
 
 # Open an environment via SSH or VSCode
 # Usage: ona open ssh [-f|--forward [-p port]...] [-n|--name session] [env-name]
-#        ona open ssh exit  — close all forwarded port tunnels
 #        ona open vscode [env-name]
 _ona_open() {
   local mode="$1"
@@ -130,11 +132,6 @@ _ona_open() {
 
 # SSH into a gitpod environment with proper environment setup
 _ona_open_ssh() {
-  if [[ "$1" == "exit" ]]; then
-    _ona_ssh_exit
-    return $?
-  fi
-
   local forward=false
   local session_suffix=""
   local name=""
@@ -177,7 +174,7 @@ _ona_open_ssh() {
       _ona_add_port_forward "$port"
     done
     "${ssh_cmd[@]}" "$environment_id.gitpod.environment"
-    echo "Background tunnel established. Use 'ona open ssh exit' to close."
+    echo "Background tunnel established. Use 'ona close ssh' to cancel forwards."
   else
     local session_name="${env_name}"
     [[ -n "$session_suffix" ]] && session_name="${env_name}-${session_suffix}"
@@ -195,26 +192,63 @@ _ona_open_vscode() {
   gitpod environment open "$environment_id" --editor vscode --start
 }
 
-# Close all active Gitpod SSH control connections
-_ona_ssh_exit() {
-  local control_dir="$HOME/.ssh/gitpod/control"
-  if [[ ! -d "$control_dir" ]]; then
-    echo "No control socket directory found at $control_dir"
-    return 0
-  fi
+# Close resources on an environment
+# Usage: ona close ssh [-p port]... [env-name]
+_ona_close() {
+  local mode="$1"
+  shift
 
-  local sockets=("$control_dir"/*(N))
-  if [[ ${#sockets[@]} -eq 0 ]]; then
-    echo "No active connections found"
-    return 0
-  fi
+  case "$mode" in
+    ssh)
+      _ona_close_ssh "$@" ;;
+    *)
+      echo "Usage: ona close ssh [-p port]... [name]"
+      return 1
+      ;;
+  esac
+}
 
-  for socket in "${sockets[@]}"; do
-    echo "Closing connection: $(basename "$socket")"
-    ssh -O exit -S "$socket" dummy 2>/dev/null
+# Cancel forwarded port tunnels without closing the SSH master connection.
+# Interactive sessions sharing the master stay connected (ssh -O cancel only
+# drops the named forwards, unlike ssh -O exit which tears down the master).
+# Usage: ona close ssh [-p port]... [env-name]
+_ona_close_ssh() {
+  local name=""
+  local -a ports=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -p|--port)
+        ports+=("$2")
+        shift 2
+        ;;
+      *)
+        name="$1"
+        shift
+        ;;
+    esac
   done
 
-  echo "All connections closed"
+  # Default to the same ports as 'open ssh --forward'
+  if [[ ${#ports[@]} -eq 0 ]]; then
+    ports=(8080 9000 9223)
+  fi
+
+  local environment_id env_name
+  _ona_select_environment "$name" || return 1
+
+  local host="$environment_id.gitpod.environment"
+  if ! ssh -O check "$host" 2>/dev/null; then
+    echo "No active SSH connection to $env_name"
+    return 0
+  fi
+
+  for port in "${ports[@]}"; do
+    if ssh -O cancel -L "127.0.0.1:$port:127.0.0.1:$port" "$host" 2>/dev/null; then
+      echo "Cancelled port forward $port on $env_name"
+    fi
+  done
+  echo "Interactive sessions remain connected."
 }
 
 # Run a command on a remote environment via SSH
@@ -496,8 +530,10 @@ Subcommands:
                                -f, --forward: Create background tunnel with port forwarding (no shell)
                                -n, --name: Suffix for tmux session name (<env>-<session>)
                                -p, --port: Forward specific port(s) (default: 8080,9000,9223)
-  open ssh exit                Close all active SSH tunnels to Ona environments
   open vscode [name]           Open an environment in VSCode
+  close ssh [-p port]... [name]
+                               Cancel forwarded port tunnel(s) (default: 8080,9000,9223)
+                               without closing interactive SSH sessions
   new [-o|--open] branch <desc>  Create environment, branch weston/<desc>
   new [-o|--open] jira <ticket-id>
                                Create environment, branch from Jira ticket
@@ -518,8 +554,9 @@ Examples:
   ona open ssh --name debug research   # Session named 'research/main-debug'
   ona open ssh --forward research      # Create background tunnel (default ports)
   ona open ssh --forward -p 3000 research  # Tunnel only port 3000
-  ona open ssh exit                    # Close all active SSH tunnels
   ona open vscode research             # Open 'research' in VSCode
+  ona close ssh research               # Cancel default port forwards (keeps sessions)
+  ona close ssh -p 8000 research       # Cancel only port 8000
   ona run research ls -la         # Run 'ls -la' on the 'research' environment
   ona agent-browser research 9222 # Open agent-browser on port 9222
   ona new branch fix-auth-bug         # Create env, branch weston/fix-auth-bug, SSH in

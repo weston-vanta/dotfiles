@@ -94,12 +94,10 @@ for config_dir in "$DOTFILES_DIR/.config"/*; do
 done
 
 echo
-echo "==> Symlinking Claude Code config"
-create_symlink "claude/settings.json" "$HOME/.claude/settings.json"
-create_symlink "claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
-create_symlink "claude/skills" "$HOME/.claude/skills"
-create_symlink "claude/hooks" "$HOME/.claude/hooks"
-create_symlink "claude/resources" "$HOME/.claude/resources"
+echo "==> Symlinking agent config"
+# Skills are not in this repo — flow owns them, installed by install-scripts/flow.zsh.
+create_symlink "agents/AGENTS.md" "$HOME/.claude/CLAUDE.md"
+create_symlink "agents/claude/settings.json" "$HOME/.claude/settings.json"
 
 echo
 echo "==> Symlinking SSH custom config"
