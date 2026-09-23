@@ -15,5 +15,8 @@
   },
   "tui": "fullscreen",
   "skipAutoPermissionPrompt": true,
-  "effortLevel": "xhigh"
+  "effortLevel": "xhigh",
+  "autoCompactEnabled": true,
+  "autoCompactWindow": 500000,
+  "hooks": {"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"bash '/Users/weston/.claude/hooks/herdr-agent-state.sh' session","timeout":10}]}]}
 }

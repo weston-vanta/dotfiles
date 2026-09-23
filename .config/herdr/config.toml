@@ -1,0 +1,19 @@
+# herdr — terminal workspace manager for AI coding agents
+# Symlinked to ~/.config/herdr/config.toml by bootstrap.sh.
+# Full reference: `herdr --default-config`
+
+onboarding = false
+
+[keys]
+# Carried over from the old tmux setup so muscle memory transfers.
+#
+# Caveat: herdr has no `send-prefix` equivalent (tmux used
+# `bind-key C-Space send-prefix` to pass a literal Ctrl+Space through).
+# So <C-Space> no longer reaches apps inside a pane. In Neovim that
+# costs treesitter incremental selection and blink.cmp's manual
+# complete; blink still opens its menu automatically while typing.
+prefix = "ctrl+space"
+
+# Agent navigation. Unbound by default in herdr.
+next_agent = "prefix+space"
+previous_agent = "prefix+shift+space"

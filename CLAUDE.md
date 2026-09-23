@@ -20,6 +20,10 @@ The bootstrap script symlinks everything from this repo into `$HOME`:
 
 It then runs `install-scripts/*.zsh`, which install Neovim and flow.
 
+`.config/herdr/` is the one `.config` entry linked file-by-file rather than as a
+directory, because `~/.config/herdr/` also holds sockets, logs, session state, and
+built plugins. Only `config.toml` belongs in this repo.
+
 There is no build system, test suite, or linter for the dotfiles themselves.
 
 ## Architecture
@@ -31,6 +35,7 @@ There is no build system, test suite, or linter for the dotfiles themselves.
 | File | Command | Purpose | Key Dependencies |
 |------|---------|---------|------------------|
 | `prs.zsh` | `prs` | GitHub PR management (list/open/view with rich rendering) | `gh`, `jq`, `glow`, `fzf` |
+| `contrib.zsh` | `contrib` | Per-user contribution reports for a repo: `prs` (merged PRs, merge rate, lines touched) and `reviews` (review counts by outcome) | `gh`, `jq` |
 | `ona.zsh` | `ona` | Gitpod/ONA environment management with SSH tunneling | `ssh`, `fzf` |
 | `git.zsh` | `gg` | Interactive git branch switching | `fzf` |
 | `imageutils.zsh` | `dotviu` | Render Graphviz `.dot` files in terminal | `graphviz`, `viu` |
@@ -38,6 +43,14 @@ There is no build system, test suite, or linter for the dotfiles themselves.
 **Neovim** uses LazyVim distribution with Lazy.nvim package manager. Custom plugin configs go in `.config/nvim/lua/plugins/`. The colorscheme is set in `.config/nvim/lua/config/lazy.lua`.
 
 **tmux** uses `Ctrl+Space` as prefix (not `Ctrl+b`). Pane borders show remote environment name when SSH'd into one. Config at `.config/tmux/tmux.conf`.
+
+**herdr** (agent workspace manager) also uses `Ctrl+Space` as prefix (not `Ctrl+b`),
+with `prefix+space` / `prefix+shift+space` for next/previous agent. Config at
+`.config/herdr/config.toml`, symlinked to `~/.config/herdr/config.toml`. Run
+`herdr --default-config` for the full reference and `herdr config check` to validate.
+Unlike tmux, herdr has no `send-prefix` action, so `<C-Space>` cannot be passed
+through to apps in a pane — it is unreachable in Neovim (treesitter incremental
+selection, blink.cmp manual complete).
 
 **Agent config** lives in `agents/` (no dot, to distinguish from project-level `.claude/` directories). `agents/AGENTS.md` holds harness-neutral, user-scoped rules and is symlinked to `~/.claude/CLAUDE.md`; harness-specific config sits in a subdirectory (`agents/claude/settings.json`). Agent *skills* are deliberately not in this repo — they belong to [flow](https://github.com/weston-vanta/flow), which `install-scripts/flow.zsh` clones to `~/.flow/source` and installs from there. Everything flow produces lives under `~/.flow`, never in host repos.
 

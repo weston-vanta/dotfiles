@@ -7,6 +7,7 @@ This repository contains configuration files that automatically set up a consist
 - **Zsh** with Oh My Zsh framework (headline theme)
 - **Ghostty** terminal emulator (FiraCode Nerd Font)
 - **tmux** terminal multiplexer (Ctrl+Space prefix)
+- **[herdr](https://herdr.dev)** agent workspace manager (Ctrl+Space prefix)
 - **Neovim** with LazyVim distribution
 - **Git** user configuration
 - **[flow](https://github.com/weston-vanta/flow)** agent skill pipeline, installed to `~/.flow`
@@ -26,6 +27,7 @@ The bootstrap script creates symlinks from this repository to your home director
 ## Custom zsh functions
 
 - `prs` -- view and open GitHub PRs (`prs help` for usage).
+- `contrib` -- report a user's contribution stats for a repo: `contrib prs` for merged PRs, merge rate, and lines touched; `contrib reviews` for review counts by outcome (`contrib help` for usage).
 - `ona` -- interact with Ona environments (`ona help` for usage).
 - `gg` -- interactive git branch switching via fzf.
 - `dotviu` -- render Graphviz `.dot` files in the terminal.

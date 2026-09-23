@@ -86,12 +86,20 @@ echo "Bootstrapping dotfiles repo at $DOTFILES_DIR"
 echo
 
 echo "==> Symlinking .config directories"
+# herdr is handled below as an individual file, not a whole directory.
 for config_dir in "$DOTFILES_DIR/.config"/*; do
   if [[ -d "$config_dir" ]]; then
     dir_name="$(basename "$config_dir")"
+    [[ "$dir_name" == "herdr" ]] && continue
     create_symlink "$config_dir" "$HOME/.config/$dir_name"
   fi
 done
+
+echo
+echo "==> Symlinking herdr config"
+# Only config.toml, since ~/.config/herdr/ also holds sockets, logs,
+# session state, and built plugins that must not live in this repo.
+create_symlink ".config/herdr/config.toml" "$HOME/.config/herdr/config.toml"
 
 echo
 echo "==> Symlinking agent config"
