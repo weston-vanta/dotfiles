@@ -27,13 +27,14 @@ Requires Linux with passwordless sudo for mount/umount.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 STALE_BASE_SECONDS = 24 * 3600
@@ -75,11 +76,14 @@ class Repo:
     def mount_point(self, name: str) -> Path:
         return self.wt_dir / name
 
+    def worktree_state(self, name: str) -> Path:
+        return self.state / name
+
     def upper_dir(self, name: str) -> Path:
-        return self.state / name / "upper"
+        return self.worktree_state(name) / "upper"
 
     def work_dir(self, name: str) -> Path:
-        return self.state / name / "work"
+        return self.worktree_state(name) / "work"
 
 
 def parse_overlay_mounts(proc_mounts_text: str) -> set[Path]:
@@ -103,14 +107,28 @@ def worktree_names_from_state(state_dir: Path) -> list[str]:
         if (d / "upper").is_dir():
             names.append(str(d.relative_to(state_dir)))
             return
-        for child in sorted(d.iterdir()):
+        for child in d.iterdir():
             if child.is_dir() and child.name not in ("upper", "work"):
                 walk(child)
 
-    for child in sorted(state_dir.iterdir()):
+    for child in state_dir.iterdir():
         if child.is_dir():
             walk(child)
     return sorted(names)
+
+
+def parse_wt_config(z_output: str) -> dict[str, list[str]]:
+    """Values per lowercased key from `git config -z --get-regexp` output.
+
+    Each value is split into lines and blank lines are dropped, matching how
+    `git config --get-all` output is read.
+    """
+    config: dict[str, list[str]] = {}
+    for entry in z_output.split("\0"):
+        if entry:
+            key, _, value = entry.partition("\n")
+            config.setdefault(key, []).extend(line for line in value.splitlines() if line.strip())
+    return config
 
 
 def parse_fuser_pids(stdout: str, ignore: set[int] = frozenset()) -> list[int]:
@@ -147,8 +165,8 @@ def human_age(seconds: float) -> str:
 
 def human_bytes(n: int) -> str:
     size = float(n)
-    for unit in ("B", "K", "M", "G", "T"):
-        if size < 1024 or unit == "T":
+    for unit in ("B", "K", "M", "G"):
+        if size < 1024:
             return f"{size:.0f}{unit}" if unit in ("B", "K") else f"{size:.1f}{unit}"
         size /= 1024
     return f"{size:.1f}T"
@@ -186,7 +204,7 @@ def sudo(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
     proc = run(["sudo", "-n", *cmd], check=False)
     # Some hosts print a harmless hostname-resolution warning on every sudo call.
     proc.stderr = "\n".join(
-        line for line in (proc.stderr or "").splitlines() if "unable to resolve host" not in line
+        line for line in proc.stderr.splitlines() if "unable to resolve host" not in line
     )
     if check and proc.returncode != 0:
         raise WtError(f"sudo command failed ({proc.returncode}): {' '.join(cmd)}\n{proc.stderr}")
@@ -197,9 +215,28 @@ def git(args: list[str], cwd: Path, *, check: bool = True) -> str:
     return run(["git", *args], cwd=cwd, check=check).stdout.strip()
 
 
-def git_config_all(root: Path, key: str) -> list[str]:
-    proc = run(["git", "config", "--get-all", key], cwd=root, check=False)
-    return [line for line in proc.stdout.splitlines() if line.strip()] if proc.returncode == 0 else []
+def git_ok(args: list[str], cwd: Path) -> bool:
+    return run(["git", *args], cwd=cwd, check=False).returncode == 0
+
+
+def read_wt_config(root: Path) -> dict[str, list[str]]:
+    proc = run(["git", "config", "-z", "--get-regexp", r"^wt\."], cwd=root, check=False)
+    return parse_wt_config(proc.stdout) if proc.returncode == 0 else {}
+
+
+def current_branch(path: Path) -> str:
+    """Checked-out branch name, or '' when HEAD is detached."""
+    return git(["branch", "--show-current"], path)
+
+
+def dirty(path: Path) -> str:
+    """Porcelain status including untracked files; '' when clean."""
+    return git(["status", "--porcelain"], path)
+
+
+def tracked_dirty(path: Path) -> str:
+    """Porcelain status of tracked files only (untracked files don't block a checkout)."""
+    return git(["status", "--porcelain", "-uno"], path)
 
 
 def resolve_repo(start: Path) -> Repo:
@@ -214,7 +251,13 @@ def resolve_repo(start: Path) -> Repo:
     root = common.parent
     if common.name != ".git" or not (root / ".git").is_dir():
         raise WtError(f"unsupported repository layout (bare or detached .git dir): {common}")
-    base_ref = (git_config_all(root, "wt.baseRef") or [None])[0]
+    config = read_wt_config(root)
+
+    def first(key: str) -> str | None:
+        values = config.get(key)
+        return values[0] if values else None
+
+    base_ref = first("wt.baseref")
     if not base_ref:
         head = git(["symbolic-ref", "-q", "--short", f"refs/remotes/{REMOTE}/HEAD"], root, check=False)
         if not head:
@@ -223,12 +266,12 @@ def resolve_repo(start: Path) -> Repo:
                 f"Run `git remote set-head {REMOTE} -a` or `git config wt.baseRef {REMOTE}/<branch>`."
             )
         base_ref = head
-    state_dir = (git_config_all(root, "wt.stateDir") or [None])[0]
+    state_dir = first("wt.statedir")
     return Repo(
         root=root,
-        warm=git_config_all(root, "wt.warm"),
+        warm=config.get("wt.warm", []),
         base_ref=base_ref,
-        cache_paths=[Path(p).expanduser() for p in git_config_all(root, "wt.cachePath")],
+        cache_paths=[Path(p).expanduser() for p in config.get("wt.cachepath", [])],
         state_dir=Path(state_dir).expanduser().resolve() if state_dir else None,
     )
 
@@ -247,13 +290,11 @@ def require_state_filesystem(repo: Repo) -> None:
         )
 
 
-def validate_name(repo: Repo, name: str) -> str:
+def validate_name(repo: Repo, name: str) -> None:
     if not name or name.startswith(".") or name.endswith("/") or "//" in name:
         raise WtError(f"invalid worktree name {name!r}")
-    proc = run(["git", "check-ref-format", "--branch", name], cwd=repo.root, check=False)
-    if proc.returncode != 0:
+    if not git_ok(["check-ref-format", "--branch", name], repo.root):
         raise WtError(f"invalid worktree name {name!r}: must be a valid branch name")
-    return name
 
 
 def overlay_mounts() -> set[Path]:
@@ -271,21 +312,25 @@ def du_bytes(path: Path) -> int:
     return int(out[0]) if out else 0
 
 
-def busy_processes(repo: Repo, name: str) -> str:
-    """Human-readable list of processes holding the mount, or '' if none.
+def busy_pids(repo: Repo, name: str) -> list[int]:
+    """PIDs holding the mount, excluding wt itself and its parent.
 
     `fuser -m` exits 0 and lists a pseudo-entry for the mount itself even when no
     process uses it, so decide on real PIDs from stdout rather than the exit code.
     """
-    mnt = str(repo.mount_point(name))
-    proc = sudo(["fuser", "-m", mnt], check=False)
-    pids = parse_fuser_pids(proc.stdout or "", ignore={os.getpid(), os.getppid()})
+    proc = sudo(["fuser", "-m", str(repo.mount_point(name))], check=False)
+    return parse_fuser_pids(proc.stdout or "", ignore={os.getpid(), os.getppid()})
+
+
+def busy_processes(repo: Repo, name: str) -> str:
+    """Human-readable list of processes holding the mount, or '' if none."""
+    pids = busy_pids(repo, name)
     if not pids:
         return ""
-    verbose = sudo(["fuser", "-vm", mnt], check=False)
+    verbose = sudo(["fuser", "-vm", str(repo.mount_point(name))], check=False)
     rows = [
         line
-        for line in (verbose.stderr or verbose.stdout or "").splitlines()
+        for line in (verbose.stderr or verbose.stdout).splitlines()
         if line.strip() and " mount " not in f" {line} " and not line.startswith("USER")
     ]
     return "\n".join(rows) or f"pids: {' '.join(map(str, pids))}"
@@ -294,9 +339,43 @@ def busy_processes(repo: Repo, name: str) -> str:
 def busy_error(name: str, busy: str) -> str:
     return (
         f"worktree {name!r} is busy: these processes have files or their cwd inside it.\n"
-        f"Git helpers (gc --auto, hooks) spawned by a commit or checkout exit within a few\n"
-        f"seconds, so if that is what you see, retry shortly; otherwise stop them first.\n{busy}"
+        f"Git helpers spawned by a commit or checkout (gc --auto, hooks) finish on their own,\n"
+        f"usually within seconds, up to a minute on a large repo: if that is what you see,\n"
+        f"retry shortly; otherwise stop them first.\n{busy}"
     )
+
+
+def require_quiet(repo: Repo, name: str) -> None:
+    busy = busy_processes(repo, name)
+    if busy:
+        raise WtError(busy_error(name, busy))
+
+
+def require_committed(name: str, mnt: Path, force: bool) -> str:
+    """The worktree's porcelain status; refuses when it is dirty unless forced."""
+    changes = dirty(mnt)
+    if changes and not force:
+        raise WtError(f"worktree {name!r} has uncommitted changes; commit them or pass --force to discard:\n{changes}")
+    return changes
+
+
+def require_clean_main(repo: Repo) -> None:
+    changes = tracked_dirty(repo.root)
+    if changes:
+        raise WtError(f"main checkout has uncommitted changes; commit or stash them first:\n{changes}")
+
+
+def require_new(repo: Repo, name: str) -> None:
+    if repo.worktree_state(name).exists() or repo.mount_point(name).exists():
+        raise WtError(f"worktree {name!r} already exists")
+
+
+def existing_name(repo: Repo, raw: str) -> str:
+    """Normalize a worktree name from the command line and require its state to exist."""
+    name = raw.strip("/")
+    if not repo.worktree_state(name).exists():
+        raise WtError(f"no worktree named {name!r}")
+    return name
 
 
 def require_environment() -> None:
@@ -306,8 +385,12 @@ def require_environment() -> None:
         raise WtError("passwordless sudo is required for overlay mounts")
 
 
+def has_base(repo: Repo) -> bool:
+    return (repo.base / ".git").exists()
+
+
 def require_base(repo: Repo) -> None:
-    if not (repo.base / ".git").exists():
+    if not has_base(repo):
         raise WtError(f"no base at {repo.base}; run `wt base-init` first")
 
 
@@ -315,9 +398,10 @@ def base_commit(repo: Repo) -> str:
     return git(["rev-parse", "HEAD"], repo.base)
 
 
-def base_commit_age_seconds(repo: Repo) -> float:
-    ts = int(git(["log", "-1", "--format=%ct"], repo.base))
-    return time.time() - ts
+def base_head(repo: Repo) -> tuple[str, float]:
+    """The base's HEAD commit and its age in seconds."""
+    commit, timestamp = git(["log", "-1", "--format=%H %ct"], repo.base).split()
+    return commit, time.time() - int(timestamp)
 
 
 def mount_overlay(repo: Repo, name: str) -> None:
@@ -334,14 +418,12 @@ def unmount_overlay(repo: Repo, name: str) -> None:
 
 def heal_mounts(repo: Repo) -> list[str]:
     """Remount any worktree whose state exists but whose overlay is gone (machine restart)."""
-    healed: list[str] = []
-    if not (repo.base / ".git").exists():
-        return healed
+    if not has_base(repo):
+        return []
     mounted = overlay_mounts()
-    for name in worktree_names_from_state(repo.state):
-        if repo.mount_point(name) not in mounted:
-            mount_overlay(repo, name)
-            healed.append(name)
+    healed = [n for n in worktree_names_from_state(repo.state) if repo.mount_point(n) not in mounted]
+    for name in healed:
+        mount_overlay(repo, name)
     if healed:
         log(f"remounted: {', '.join(healed)}")
     return healed
@@ -369,7 +451,7 @@ def register_worktree_entry(repo: Repo, name: str, commit: str) -> None:
     """
     mnt = repo.mount_point(name)
     git(["worktree", "prune"], repo.root)
-    reg_parent = repo.state / name / "reg"
+    reg_parent = repo.worktree_state(name) / "reg"
     reg_tmp = reg_parent / Path(name).name
     reg_parent.mkdir(parents=True, exist_ok=True)
     git(["worktree", "add", "--no-checkout", "--detach", str(reg_tmp), commit], repo.root)
@@ -378,8 +460,12 @@ def register_worktree_entry(repo: Repo, name: str, commit: str) -> None:
         raise WtError(f"unexpected .git pointer in {reg_tmp}: {pointer!r}")
     gitdir = Path(pointer.removeprefix("gitdir: "))
     shutil.rmtree(reg_parent)
-    (mnt / ".git").write_text(f"gitdir: {gitdir}\n")
+    write_git_pointer(repo, name, gitdir)
     (gitdir / "gitdir").write_text(f"{mnt / '.git'}\n")
+
+
+def write_git_pointer(repo: Repo, name: str, entry: Path) -> None:
+    (repo.mount_point(name) / ".git").write_text(f"gitdir: {entry}\n")
 
 
 def restore_pointer(repo: Repo, name: str) -> None:
@@ -387,27 +473,28 @@ def restore_pointer(repo: Repo, name: str) -> None:
     entry = worktree_entry(repo, name)
     if entry is None:
         raise WtError(f"git worktree entry missing for {name!r}")
-    (repo.mount_point(name) / ".git").write_text(f"gitdir: {entry}\n")
+    write_git_pointer(repo, name, entry)
 
 
-def reset_upper(repo: Repo, name: str) -> None:
-    """Drop a worktree's diff layer; everything committed lives in the shared .git."""
+def drop_upper(repo: Repo, name: str) -> None:
+    """Drop a worktree's diff layer; everything committed lives in the shared .git.
+
+    mount_overlay recreates the empty upper/work dirs.
+    """
     sudo(["rm", "-rf", str(repo.upper_dir(name)), str(repo.work_dir(name))])
-    repo.upper_dir(name).mkdir(parents=True)
-    repo.work_dir(name).mkdir(parents=True)
 
 
 def destroy(repo: Repo, name: str) -> None:
     if is_mounted(repo, name):
         unmount_overlay(repo, name)
-    if (repo.state / name).exists():
+    state, mnt = repo.worktree_state(name), repo.mount_point(name)
+    if state.exists():
         # work/ is root-owned by the kernel.
-        sudo(["rm", "-rf", str(repo.state / name)])
-    mnt = repo.mount_point(name)
+        sudo(["rm", "-rf", str(state)])
     if mnt.exists():
         mnt.rmdir()
     # Drop now-empty parents of nested names, stopping at the .wt dir.
-    for parent in (mnt.parent, (repo.state / name).parent):
+    for parent in (mnt.parent, state.parent):
         while parent not in (repo.wt_dir, repo.state) and parent.is_dir() and not any(parent.iterdir()):
             parent.rmdir()
             parent = parent.parent
@@ -419,10 +506,9 @@ def worktree_status(repo: Repo, name: str) -> dict[str, object]:
     mounted = is_mounted(repo, name)
     info: dict[str, object] = {"name": name, "path": str(mnt), "mounted": mounted}
     if mounted:
-        branch = git(["branch", "--show-current"], mnt)
-        info["branch"] = branch or f"detached@{git(['rev-parse', '--short', 'HEAD'], mnt)}"
-        info["dirty_files"] = len(git(["status", "--porcelain"], mnt).splitlines())
-        info["busy"] = bool(busy_processes(repo, name))
+        info["branch"] = current_branch(mnt) or f"detached@{git(['rev-parse', '--short', 'HEAD'], mnt)}"
+        info["dirty_files"] = len(dirty(mnt).splitlines())
+        info["busy"] = bool(busy_pids(repo, name))
     info["upper_bytes"] = du_bytes(repo.upper_dir(name))
     return info
 
@@ -430,42 +516,36 @@ def worktree_status(repo: Repo, name: str) -> dict[str, object]:
 # --------------------------------------------------------------------- warm / merge
 
 
-@dataclass
-class Timing:
-    step: str
-    seconds: float
+Timings = list[dict[str, object]]
 
 
-def timed(step: str, fn, timings: list[Timing]):
+@contextlib.contextmanager
+def timed(step: str, timings: Timings):
     log(f"{step}…")
     start = time.monotonic()
-    result = fn()
+    yield
     elapsed = time.monotonic() - start
-    timings.append(Timing(step, round(elapsed, 1)))
+    timings.append({"step": step, "seconds": round(elapsed, 1)})
     log(f"{step} done in {elapsed:.0f}s")
-    return result
 
 
-def run_warm_commands(repo: Repo, timings: list[Timing]) -> None:
+def fetch(repo: Repo, timings: Timings) -> None:
+    with timed(f"fetch {REMOTE}", timings):
+        git(["fetch", "-q", REMOTE], repo.root)
+
+
+def run_warm_commands(repo: Repo, timings: Timings) -> None:
     """Run the repo's configured wt.warm commands in the base, streaming their output."""
     if not repo.warm:
         log("no wt.warm commands configured; base is a plain checkout")
     for cmd in repo.warm:
-        timed(f"warm: {cmd}", lambda: run(["sh", "-c", cmd], cwd=repo.base, capture=False), timings)
-
-
-def tracked_dirty(path: Path) -> str:
-    """Porcelain status of tracked files only (untracked files don't block a checkout)."""
-    return git(["status", "--porcelain", "-uno"], path)
-
-
-def is_ancestor(ancestor: str, descendant: str, cwd: Path) -> bool:
-    return run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=cwd, check=False).returncode == 0
+        with timed(f"warm: {cmd}", timings):
+            run(["sh", "-c", cmd], cwd=repo.base, capture=False)
 
 
 def detach_head(mnt: Path, commit: str) -> None:
     """Point HEAD at a commit without moving the branch it was on and without touching files."""
-    run(["git", "update-ref", "--no-deref", "HEAD", commit], cwd=mnt)
+    git(["update-ref", "--no-deref", "HEAD", commit], mnt)
 
 
 def merge_base_into_branch(repo: Repo, mnt: Path, branch: str, main_commit: str) -> str:
@@ -477,28 +557,25 @@ def merge_base_into_branch(repo: Repo, mnt: Path, branch: str, main_commit: str)
     Returns the action taken.
     """
     branch_commit = git(["rev-parse", branch], mnt)
-    action = classify_merge(
-        is_ancestor(branch_commit, main_commit, mnt), is_ancestor(main_commit, branch_commit, mnt)
-    )
+    # Unrelated histories exit non-zero with no output, which classifies as a merge.
+    common = git(["merge-base", branch_commit, main_commit], mnt, check=False)
+    action = classify_merge(common == branch_commit, common == main_commit)
     if action == "fast-forward":
-        run(["git", "update-ref", f"refs/heads/{branch}", main_commit, branch_commit], cwd=mnt)
+        git(["update-ref", f"refs/heads/{branch}", main_commit, branch_commit], mnt)
     elif action == "merge":
         tree = run(["git", "merge-tree", "--write-tree", branch_commit, main_commit], cwd=mnt, check=False)
         if tree.returncode == 0:
             merged_tree = tree.stdout.strip().splitlines()[0]
             msg = f"Merge {repo.base_ref} into {branch} (wt update)"
-            commit = run(
-                ["git", "commit-tree", merged_tree, "-p", branch_commit, "-p", main_commit, "-m", msg],
-                cwd=mnt,
-            ).stdout.strip()
-            run(["git", "update-ref", f"refs/heads/{branch}", commit, branch_commit], cwd=mnt)
+            commit = git(["commit-tree", merged_tree, "-p", branch_commit, "-p", main_commit, "-m", msg], mnt)
+            git(["update-ref", f"refs/heads/{branch}", commit, branch_commit], mnt)
         elif tree.returncode == 1:
-            git(["checkout", "-q", branch], mnt)
-            run(["git", "merge", "--no-edit", main_commit], cwd=mnt, check=False)
-            return "conflict"
+            action = "conflict"
         else:
             raise WtError(f"git merge-tree failed for {branch}:\n{tree.stderr}")
     git(["checkout", "-q", branch], mnt)
+    if action == "conflict":
+        git(["merge", "--no-edit", main_commit], mnt, check=False)
     return action
 
 
@@ -513,19 +590,16 @@ def cmd_base_init(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     # Check now rather than at the first `create`, so a repo on an unsuitable
     # filesystem is caught before a possibly long warm-up.
     require_state_filesystem(repo)
-    timings: list[Timing] = []
-    timed(f"fetch {REMOTE}", lambda: git(["fetch", "-q", REMOTE], repo.root), timings)
-    timed(
-        f"git worktree add {repo.base} ({repo.base_ref})",
-        lambda: git(["worktree", "add", "--detach", str(repo.base), repo.base_ref], repo.root),
-        timings,
-    )
+    timings: Timings = []
+    fetch(repo, timings)
+    with timed(f"git worktree add {repo.base} ({repo.base_ref})", timings):
+        git(["worktree", "add", "--detach", str(repo.base), repo.base_ref], repo.root)
     run_warm_commands(repo, timings)
     return {
         "base": str(repo.base),
         "commit": base_commit(repo),
         "base_bytes": du_bytes(repo.base),
-        "timings": [asdict(t) for t in timings],
+        "timings": timings,
     }
 
 
@@ -535,9 +609,9 @@ def cmd_base_warm(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     if overlay_mounts() & {repo.mount_point(n) for n in worktree_names_from_state(repo.state)}:
         # Lower layers must not change under a live overlay.
         raise WtError("worktrees are mounted; remove them before warming the base")
-    timings: list[Timing] = []
+    timings: Timings = []
     run_warm_commands(repo, timings)
-    return {"base_bytes": du_bytes(repo.base), "timings": [asdict(t) for t in timings]}
+    return {"base_bytes": du_bytes(repo.base), "timings": timings}
 
 
 def cmd_base_remove(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
@@ -546,7 +620,7 @@ def cmd_base_remove(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     names = worktree_names_from_state(repo.state)
     if names:
         raise WtError(f"remove these worktrees first: {', '.join(names)}")
-    if git(["status", "--porcelain"], repo.base) and not args.force:
+    if dirty(repo.base) and not args.force:
         raise WtError(f"base {repo.base} has local changes; pass --force to discard")
     git(["worktree", "remove", "--force", str(repo.base)], repo.root)
     for d in (repo.wt_dir, repo.state):
@@ -558,29 +632,32 @@ def cmd_base_remove(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
 def cmd_create(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     require_environment()
     require_base(repo)
+    return create_worktree(repo, args.name, args.start)
+
+
+def create_worktree(repo: Repo, name: str, start_ref: str | None) -> dict[str, object]:
+    """Create a worktree over the base; the caller has checked the environment and base."""
     require_state_filesystem(repo)
     heal_mounts(repo)
-    name = validate_name(repo, args.name)
-    if (repo.state / name).exists() or repo.mount_point(name).exists():
-        raise WtError(f"worktree {name!r} already exists")
-    age = base_commit_age_seconds(repo)
+    validate_name(repo, name)
+    require_new(repo, name)
+    commit, age = base_head(repo)
     if age > STALE_BASE_SECONDS:
         log(f"warning: base commit is {human_age(age)} old; consider `wt update`")
 
     start = time.monotonic()
-    commit = base_commit(repo)
     mnt = repo.mount_point(name)
     try:
         mount_overlay(repo, name)
         register_worktree_entry(repo, name, commit)
         git(["reset", "-q"], mnt)
-        branch_exists = run(["git", "show-ref", "--verify", "-q", f"refs/heads/{name}"], cwd=mnt, check=False).returncode == 0
+        branch_exists = git_ok(["show-ref", "--verify", "-q", f"refs/heads/{name}"], mnt)
         if branch_exists:
-            if args.start:
+            if start_ref:
                 raise WtError(f"branch {name} already exists; --from only applies to new branches")
             git(["checkout", "-q", name], mnt)
         else:
-            git(["checkout", "-q", "-b", name, args.start or commit], mnt)
+            git(["checkout", "-q", "-b", name, start_ref or commit], mnt)
     except Exception:
         destroy(repo, name)
         raise
@@ -594,18 +671,10 @@ def cmd_create(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
 def cmd_remove(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     require_environment()
     heal_mounts(repo)
-    name = args.name.strip("/")
-    if not (repo.state / name).exists():
-        raise WtError(f"no worktree named {name!r}")
+    name = existing_name(repo, args.name)
     if is_mounted(repo, name):
-        busy = busy_processes(repo, name)
-        if busy:
-            raise WtError(busy_error(name, busy))
-        dirty = git(["status", "--porcelain"], repo.mount_point(name))
-        if dirty and not args.force:
-            raise WtError(
-                f"worktree {name!r} has uncommitted changes; commit them or pass --force to discard:\n{dirty}"
-            )
+        require_quiet(repo, name)
+        require_committed(name, repo.mount_point(name), args.force)
     destroy(repo, name)
     return {"removed": name}
 
@@ -624,24 +693,19 @@ def cmd_up(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
 def cmd_status(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     require_environment()
     heal_mounts(repo)
-    info: dict[str, object] = {
+    base = None
+    if has_base(repo):
+        commit, age = base_head(repo)
+        base = {"path": str(repo.base), "commit": commit, "age": human_age(age), "bytes": du_bytes(repo.base)}
+    return {
         "repo": str(repo.root),
         "base_ref": repo.base_ref,
         "warm": repo.warm,
         "disk_free_bytes": shutil.disk_usage(repo.root).free,
         "caches": [{"path": str(p), "bytes": du_bytes(p)} for p in repo.cache_paths],
         "worktrees": len(worktree_names_from_state(repo.state)),
+        "base": base,
     }
-    if (repo.base / ".git").exists():
-        info["base"] = {
-            "path": str(repo.base),
-            "commit": base_commit(repo),
-            "age": human_age(base_commit_age_seconds(repo)),
-            "bytes": du_bytes(repo.base),
-        }
-    else:
-        info["base"] = None
-    return info
 
 
 def cmd_update(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
@@ -651,7 +715,7 @@ def cmd_update(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     names = worktree_names_from_state(repo.state)
 
     problems: list[str] = []
-    if git(["status", "--porcelain"], repo.base):
+    if dirty(repo.base):
         problems.append(f"base {repo.base} has local changes")
     heads: dict[str, tuple[str | None, str]] = {}
     for name in names:
@@ -659,39 +723,39 @@ def cmd_update(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
         busy = busy_processes(repo, name)
         if busy:
             problems.append(busy_error(name, busy))
-        if git(["status", "--porcelain"], mnt):
+        if dirty(mnt):
             problems.append(f"{name}: uncommitted changes")
-        branch = git(["branch", "--show-current"], mnt) or None
+        branch = current_branch(mnt) or None
         heads[name] = (branch, git(["rev-parse", "HEAD"], mnt))
     if problems:
         raise WtError("update refused:\n" + "\n".join(problems))
 
-    timings: list[Timing] = []
-    timed(f"fetch {REMOTE}", lambda: git(["fetch", "-q", REMOTE], repo.root), timings)
+    timings: Timings = []
+    fetch(repo, timings)
     old_base = base_commit(repo)
     new_base = git(["rev-parse", repo.base_ref], repo.root)
 
     for name in names:
         unmount_overlay(repo, name)
     results: dict[str, str] = {}
+    base_now: str | None = None
     try:
         if new_base != old_base:
-            timed(
-                f"base checkout {new_base[:11]}",
-                lambda: git(["checkout", "-q", "--detach", new_base], repo.base),
-                timings,
-            )
+            with timed(f"base checkout {new_base[:11]}", timings):
+                git(["checkout", "-q", "--detach", new_base], repo.base)
         run_warm_commands(repo, timings)
     finally:
         # Whatever happened to the base, give the worktrees back.
         for name in names:
             branch, head = heads[name]
+            mnt = repo.mount_point(name)
             try:
-                reset_upper(repo, name)
+                drop_upper(repo, name)
                 mount_overlay(repo, name)
                 restore_pointer(repo, name)
-                mnt = repo.mount_point(name)
-                detach_head(mnt, base_commit(repo))
+                # Read lazily so a failure here is reported per worktree.
+                base_now = base_now or base_commit(repo)
+                detach_head(mnt, base_now)
                 git(["reset", "-q"], mnt)
                 if branch is None:
                     git(["checkout", "-q", "--detach", head], mnt)
@@ -700,39 +764,30 @@ def cmd_update(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
                     git(["checkout", "-q", branch], mnt)
                     results[name] = "restored (no merge)"
                 else:
-                    results[name] = merge_base_into_branch(repo, mnt, branch, base_commit(repo))
+                    results[name] = merge_base_into_branch(repo, mnt, branch, base_now)
             except WtError as e:
                 results[name] = f"FAILED: {e}"
     return {
-        "base": {"old": old_base, "new": base_commit(repo)},
-        "worktrees": [{"name": n, "branch": heads[n][0], "result": results.get(n, "?")} for n in names],
-        "timings": [asdict(t) for t in timings],
+        "base": {"old": old_base, "new": base_now or base_commit(repo)},
+        "worktrees": [{"name": n, "branch": heads[n][0], "result": results[n]} for n in names],
+        "timings": timings,
     }
 
 
 def cmd_promote(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     require_environment()
     heal_mounts(repo)
-    name = args.name.strip("/")
-    if not (repo.state / name).exists():
-        raise WtError(f"no worktree named {name!r}")
+    name = existing_name(repo, args.name)
     mnt = repo.mount_point(name)
-    busy = busy_processes(repo, name)
-    if busy:
-        raise WtError(busy_error(name, busy))
-    branch = git(["branch", "--show-current"], mnt)
+    require_quiet(repo, name)
+    branch = current_branch(mnt)
     if not branch:
         raise WtError(f"worktree {name!r} is detached; nothing to promote")
-    dirty = git(["status", "--porcelain"], mnt)
-    if dirty:
-        if not args.force:
-            raise WtError(f"worktree {name!r} has uncommitted changes; commit them or pass --force to discard:\n{dirty}")
+    if require_committed(name, mnt, args.force):
         git(["reset", "-q", "--hard"], mnt)
         git(["clean", "-fdq"], mnt)
-    main_dirty = tracked_dirty(repo.root)
-    if main_dirty:
-        raise WtError(f"main checkout has uncommitted changes; commit or stash them first:\n{main_dirty}")
-    previous = git(["branch", "--show-current"], repo.root) or git(["rev-parse", "HEAD"], repo.root)
+    require_clean_main(repo)
+    previous = current_branch(repo.root) or git(["rev-parse", "HEAD"], repo.root)
 
     git(["checkout", "-q", "--detach"], mnt)
     proc = run(["git", "checkout", "-q", branch], cwd=repo.root, check=False)
@@ -747,18 +802,15 @@ def cmd_demote(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     require_environment()
     require_base(repo)
     heal_mounts(repo)
-    branch = git(["branch", "--show-current"], repo.root)
+    branch = current_branch(repo.root)
     if not branch or branch == repo.default_branch:
         raise WtError(f"main checkout must be on a branch other than {repo.default_branch} to demote")
-    if (repo.state / branch).exists() or repo.mount_point(branch).exists():
-        raise WtError(f"worktree {branch!r} already exists")
-    main_dirty = tracked_dirty(repo.root)
-    if main_dirty:
-        raise WtError(f"main checkout has uncommitted changes; commit or stash them first:\n{main_dirty}")
+    require_new(repo, branch)
+    require_clean_main(repo)
 
     git(["checkout", "-q", repo.default_branch], repo.root)
     try:
-        info = cmd_create(repo, argparse.Namespace(name=branch, start=None))
+        info = create_worktree(repo, branch, None)
     except Exception:
         git(["checkout", "-q", branch], repo.root)
         raise
@@ -783,22 +835,22 @@ def config_key(name: str) -> tuple[str, bool]:
 
 
 def cmd_config(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
-    action = args.action or "show"
-    if action != "show":
+    action = args.action
+    if action:
         if not args.key:
             raise WtError(f"config {action} needs a key")
         key, multi = config_key(args.key)
         if action == "unset":
-            run(["git", "config", "--local", "--unset-all", key], cwd=repo.root, check=False)
+            git(["config", "--local", "--unset-all", key], repo.root, check=False)
         else:
             if not args.values:
                 raise WtError(f"config {action} {key} needs a value")
             if not multi and (len(args.values) > 1 or action == "add"):
                 raise WtError(f"{key} takes a single value; use `wt config set {args.key} <value>`")
             if action == "set":
-                run(["git", "config", "--local", "--unset-all", key], cwd=repo.root, check=False)
+                git(["config", "--local", "--unset-all", key], repo.root, check=False)
             for value in args.values:
-                run(["git", "config", "--local", "--add", key, value], cwd=repo.root)
+                git(["config", "--local", "--add", key, value], repo.root)
         repo = resolve_repo(repo.root)
     return {
         "repo": str(repo.root),
@@ -879,6 +931,10 @@ OUTPUT
 # ------------------------------------------------------------------------- output
 
 
+def timing_lines(timings: Timings) -> list[str]:
+    return [f"{t['step']}: {t['seconds']}s" for t in timings]
+
+
 def render(command: str, result: dict[str, object]) -> str:
     if command == "guide":
         return result["guide"].rstrip("\n")
@@ -898,7 +954,7 @@ def render(command: str, result: dict[str, object]) -> str:
             lines.append(f"{r['name']:<40} {r.get('branch', '-'):<40} {human_bytes(r['upper_bytes']):>8}  {' '.join(flags)}")
         return "\n".join(lines)
     if command in ("create", "demote"):
-        verb = "new branch" if result.get("created_branch") else "existing branch"
+        verb = "new branch" if result["created_branch"] else "existing branch"
         line = f"{result['path']}  ({verb} {result['branch']}, {result['create_seconds']}s)"
         return line + ("; main checkout is back on its default branch" if command == "demote" else "")
     if command == "remove":
@@ -922,13 +978,13 @@ def render(command: str, result: dict[str, object]) -> str:
         lines.append(f"disk free:   {human_bytes(result['disk_free_bytes'])}")
         return "\n".join(lines)
     if command in ("base-init", "base-warm"):
-        lines = [f"{t['step']}: {t['seconds']}s" for t in result["timings"]]
+        lines = timing_lines(result["timings"])
         lines.append(f"base size: {human_bytes(result['base_bytes'])}")
         return "\n".join(lines)
     if command == "update":
         b = result["base"]
         lines = [f"base: {b['old'][:11]} -> {b['new'][:11]}" + ("  (unchanged)" if b["old"] == b["new"] else "")]
-        lines += [f"{t['step']}: {t['seconds']}s" for t in result["timings"]]
+        lines += timing_lines(result["timings"])
         for w in result["worktrees"]:
             lines.append(f"{w['name']:<40} {w['branch'] or '-':<40} {w['result']}")
         conflicts = [w["name"] for w in result["worktrees"] if w["result"] == "conflict"]
@@ -994,8 +1050,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_config)
     s = sub.add_parser("up", help="remount worktrees after a machine restart")
     s.set_defaults(fn=cmd_up)
-    s = sub.add_parser("guide", help="how agents should use wt (read this first)")
-    s.set_defaults(fn=None)
+    sub.add_parser("guide", help="how agents should use wt (read this first)")
 
     s = sub.add_parser("update", help="move the base to its ref and merge it into every worktree branch (all must be quiet and clean)")
     s.add_argument("--no-merge", action="store_true", help="restore branches as-is instead of merging")
