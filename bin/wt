@@ -662,10 +662,61 @@ def cmd_demote(args: argparse.Namespace) -> dict[str, object]:
     return info
 
 
+# -------------------------------------------------------------------------- guide
+
+GUIDE = f"""\
+wt: worktrees for agents on obsidian CDEs
+
+A wt worktree is an overlayfs mount over a warm, fully typechecked base checkout
+of main. Creating one takes ~5s and costs only the files you change. A plain
+`git worktree add` + `just pp` costs ~3.4 GB and over a minute, and the Agent
+tool's `isolation: "worktree"` does the same thing. Never use either here.
+
+COORDINATOR PATTERN
+  wt status                    base present? age warning past 24h means run `wt update`
+  wt create <name>             new branch {BRANCH_PREFIX}/<name> at the base commit;
+                               prints the path {MOUNTS}/<name>
+  wt create <name> --ref <br>  check out an existing branch or commit instead
+  -> dispatch a sub-agent WITHOUT worktree isolation; put the path in its prompt
+     and include the sub-agent rules below
+  wt list                      one line per worktree with busy / dirty flags
+  wt remove <name>             once the branch is pushed; refuses if busy or dirty
+                               (--force discards uncommitted changes; the branch survives)
+
+SUB-AGENT RULES (paste into the sub-agent prompt)
+  - Work only inside <path>. Do not touch {MAIN} or {BASE}.
+  - Dependencies are installed and every package is typechecked; run scoped
+    turbo/just commands normally. Do not run `just pp` unless something is stale.
+  - Changing dependencies (pnpm add/remove) works but costs ~40s and ~200 MB.
+  - Commit everything before finishing, then push the branch
+    (git push -u origin <branch>). Uncommitted changes block removal and update.
+
+KEEPING CURRENT
+  wt update                    every worktree must be quiet and clean. Moves the base
+                               to origin/main, re-warms it, remounts, and merges main
+                               into every branch. A conflict is left in place in that
+                               worktree: resolve it there, commit, done.
+  wt promote <name>            check the branch out in {MAIN} for human work; removes
+                               the worktree. Refuses if either side has changes.
+  wt demote [name]             inverse: move the main checkout's branch into a worktree
+  wt up                        remount after a CDE restart (every command self-heals too)
+
+OUTPUT
+  Add --json to any command for machine-readable output. Refusals exit 1 with a
+  one-line reason on stderr (or {{"error": ...}} with --json).
+"""
+
+
+def cmd_guide(args: argparse.Namespace) -> dict[str, object]:
+    return {"guide": GUIDE}
+
+
 # ------------------------------------------------------------------------- output
 
 
 def render(command: str, result: dict[str, object]) -> str:
+    if command == "guide":
+        return result["guide"].rstrip("\n")
     if command == "list":
         rows = result["worktrees"]
         if not rows:
@@ -757,6 +808,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("up", help="remount worktrees after a CDE restart")
     s.set_defaults(fn=cmd_up)
+
+    s = sub.add_parser("guide", help="how agents should use wt (read this first)")
+    s.set_defaults(fn=cmd_guide)
 
     s = sub.add_parser(
         "update",
