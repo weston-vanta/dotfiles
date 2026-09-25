@@ -271,28 +271,17 @@ def du_bytes(path: Path) -> int:
     return int(out[0]) if out else 0
 
 
-BUSY_GRACE_SECONDS = 10
-
-
 def busy_processes(repo: Repo, name: str) -> str:
     """Human-readable list of processes holding the mount, or '' if none.
 
     `fuser -m` exits 0 and lists a pseudo-entry for the mount itself even when no
     process uses it, so decide on real PIDs from stdout rather than the exit code.
-    Git spawns short-lived helpers (gc --auto, hooks) with their cwd in the tree
-    right after a commit or checkout, so a busy result is re-checked for a few
-    seconds before being reported.
     """
     mnt = str(repo.mount_point(name))
-    deadline = time.monotonic() + BUSY_GRACE_SECONDS
-    while True:
-        proc = sudo(["fuser", "-m", mnt], check=False)
-        pids = parse_fuser_pids(proc.stdout or "", ignore={os.getpid(), os.getppid()})
-        if not pids:
-            return ""
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(0.5)
+    proc = sudo(["fuser", "-m", mnt], check=False)
+    pids = parse_fuser_pids(proc.stdout or "", ignore={os.getpid(), os.getppid()})
+    if not pids:
+        return ""
     verbose = sudo(["fuser", "-vm", mnt], check=False)
     rows = [
         line
@@ -300,6 +289,14 @@ def busy_processes(repo: Repo, name: str) -> str:
         if line.strip() and " mount " not in f" {line} " and not line.startswith("USER")
     ]
     return "\n".join(rows) or f"pids: {' '.join(map(str, pids))}"
+
+
+def busy_error(name: str, busy: str) -> str:
+    return (
+        f"worktree {name!r} is busy: these processes have files or their cwd inside it.\n"
+        f"Git helpers (gc --auto, hooks) spawned by a commit or checkout exit within a few\n"
+        f"seconds, so if that is what you see, retry shortly; otherwise stop them first.\n{busy}"
+    )
 
 
 def require_environment() -> None:
@@ -603,7 +600,7 @@ def cmd_remove(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     if is_mounted(repo, name):
         busy = busy_processes(repo, name)
         if busy:
-            raise WtError(f"worktree {name!r} is busy; stop these processes first:\n{busy}")
+            raise WtError(busy_error(name, busy))
         dirty = git(["status", "--porcelain"], repo.mount_point(name))
         if dirty and not args.force:
             raise WtError(
@@ -661,7 +658,7 @@ def cmd_update(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
         mnt = repo.mount_point(name)
         busy = busy_processes(repo, name)
         if busy:
-            problems.append(f"{name}: busy\n{busy}")
+            problems.append(busy_error(name, busy))
         if git(["status", "--porcelain"], mnt):
             problems.append(f"{name}: uncommitted changes")
         branch = git(["branch", "--show-current"], mnt) or None
@@ -722,7 +719,7 @@ def cmd_promote(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     mnt = repo.mount_point(name)
     busy = busy_processes(repo, name)
     if busy:
-        raise WtError(f"worktree {name!r} is busy; stop these processes first:\n{busy}")
+        raise WtError(busy_error(name, busy))
     branch = git(["branch", "--show-current"], mnt)
     if not branch:
         raise WtError(f"worktree {name!r} is detached; nothing to promote")
