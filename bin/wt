@@ -1,0 +1,556 @@
+#!/usr/bin/env python3
+"""wt: cheap, fast git worktrees for the obsidian monorepo via overlayfs.
+
+One fully warmed checkout of `main` (the base) is the read-only lower layer.
+Each worktree is an overlay mount over it with its own upper directory, so a
+worktree costs only the files its branch changes or rebuilds.
+
+Layout (everything under /workspaces, the one ext4 disk pnpm can hardlink on):
+  /workspaces/obsidian              main checkout, never touched
+  /workspaces/obsidian-base         base: detached git worktree at a main commit
+  /workspaces/wt/<name>             mount point handed to agents
+  /workspaces/wt-state/<name>/      upper/ (the diff) and work/ (kernel scratch)
+
+State is derived from the filesystem and git; there is no registry file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+MAIN = Path(os.environ.get("WT_MAIN", "/workspaces/obsidian"))
+BASE = Path(os.environ.get("WT_BASE", "/workspaces/obsidian-base"))
+MOUNTS = Path(os.environ.get("WT_MOUNTS", "/workspaces/wt"))
+STATE = Path(os.environ.get("WT_STATE", "/workspaces/wt-state"))
+BRANCH_PREFIX = os.environ.get("WT_BRANCH_PREFIX", "weston")
+STALE_BASE_SECONDS = 24 * 3600
+
+SHARED_ENV = {
+    "PNPM_STORE_DIR": str(MAIN / ".pnpm-store"),
+    "TURBO_CACHE_DIR": "/workspaces/turbo-cache",
+    "TURBO_NO_UPDATE_NOTIFIER": "true",
+}
+
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+class WtError(Exception):
+    pass
+
+
+# --------------------------------------------------------------------------- pure
+
+
+def mount_point(name: str) -> Path:
+    return MOUNTS / name
+
+
+def upper_dir(name: str) -> Path:
+    return STATE / name / "upper"
+
+
+def work_dir(name: str) -> Path:
+    return STATE / name / "work"
+
+
+def default_branch(name: str) -> str:
+    return f"{BRANCH_PREFIX}/{name}"
+
+
+def validate_name(name: str) -> str:
+    if not NAME_RE.match(name):
+        raise WtError(
+            f"invalid worktree name {name!r}: use lowercase letters, digits, '.', '_', '-'"
+        )
+    return name
+
+
+def parse_overlay_mounts(proc_mounts_text: str) -> set[Path]:
+    """Mount points of overlay filesystems, from /proc/self/mounts content."""
+    found: set[Path] = set()
+    for line in proc_mounts_text.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == "overlay":
+            # /proc/mounts octal-escapes spaces as \040; our paths never contain them.
+            found.add(Path(parts[1]))
+    return found
+
+
+def worktree_names_from_state(state_dir: Path) -> list[str]:
+    if not state_dir.is_dir():
+        return []
+    return sorted(p.name for p in state_dir.iterdir() if (p / "upper").is_dir())
+
+
+def human_age(seconds: float) -> str:
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
+
+
+def human_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "K", "M", "G", "T"):
+        if size < 1024 or unit == "T":
+            return f"{size:.0f}{unit}" if unit in ("B", "K") else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}T"
+
+
+# ------------------------------------------------------------------------ effects
+
+
+def log(msg: str) -> None:
+    print(f"wt: {msg}", file=sys.stderr, flush=True)
+
+
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = True,
+    capture: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    full_env = {**os.environ, **SHARED_ENV, **(env or {})}
+    # Streamed child output goes to stderr so stdout stays clean for --json.
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        capture_output=capture,
+        stdout=None if capture else sys.stderr,
+        env=full_env,
+    )
+    if check and proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip() if capture else ""
+        raise WtError(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{detail}")
+    return proc
+
+
+def sudo(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    proc = run(["sudo", "-n", *cmd], check=False)
+    # The CDE's sudo prints a harmless hostname-resolution warning on every call.
+    proc.stderr = "\n".join(
+        line for line in (proc.stderr or "").splitlines() if "unable to resolve host" not in line
+    )
+    if check and proc.returncode != 0:
+        raise WtError(f"sudo command failed ({proc.returncode}): {' '.join(cmd)}\n{proc.stderr}")
+    return proc
+
+
+def git(args: list[str], cwd: Path, *, check: bool = True) -> str:
+    return run(["git", *args], cwd=cwd, check=check).stdout.strip()
+
+
+def overlay_mounts() -> set[Path]:
+    return parse_overlay_mounts(Path("/proc/self/mounts").read_text())
+
+
+def is_mounted(name: str) -> bool:
+    return mount_point(name) in overlay_mounts()
+
+
+def du_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    out = sudo(["du", "-sb", str(path)]).stdout.split()
+    return int(out[0]) if out else 0
+
+
+def disk_free_bytes(path: Path) -> int:
+    usage = shutil.disk_usage(path)
+    return usage.free
+
+
+def parse_fuser_pids(stdout: str, ignore: set[int] = frozenset()) -> list[int]:
+    """PIDs from `fuser -m` stdout (space-separated, possibly with access-letter suffixes)."""
+    pids: list[int] = []
+    for token in stdout.split():
+        digits = token.rstrip("cefFrm")
+        if digits.isdigit() and int(digits) not in ignore:
+            pids.append(int(digits))
+    return pids
+
+
+def busy_processes(name: str) -> str:
+    """Human-readable list of processes holding the mount, or '' if none.
+
+    `fuser -m` exits 0 and lists a pseudo-entry for the mount itself even when no
+    process uses it, so decide on real PIDs from stdout rather than the exit code.
+    """
+    mnt = str(mount_point(name))
+    proc = sudo(["fuser", "-m", mnt], check=False)
+    pids = parse_fuser_pids(proc.stdout or "", ignore={os.getpid(), os.getppid()})
+    if not pids:
+        return ""
+    verbose = sudo(["fuser", "-vm", mnt], check=False)
+    rows = [
+        line
+        for line in (verbose.stderr or verbose.stdout or "").splitlines()
+        if line.strip() and " mount " not in f" {line} " and not line.startswith("USER")
+    ]
+    return "\n".join(rows) or f"pids: {' '.join(map(str, pids))}"
+
+
+def require_environment() -> None:
+    if not MAIN.is_dir() or not (MAIN / ".git").exists():
+        raise WtError(f"main checkout not found at {MAIN}")
+    if sudo(["true"], check=False).returncode != 0:
+        raise WtError("passwordless sudo is required for overlay mounts")
+
+
+def require_base() -> None:
+    if not (BASE / ".git").exists():
+        raise WtError(f"no base at {BASE}; run `wt base-init` first")
+
+
+def base_commit() -> str:
+    return git(["rev-parse", "HEAD"], BASE)
+
+
+def base_commit_age_seconds() -> float:
+    ts = int(git(["log", "-1", "--format=%ct"], BASE))
+    return time.time() - ts
+
+
+def mount_overlay(name: str) -> None:
+    mnt, upper, work = mount_point(name), upper_dir(name), work_dir(name)
+    for d in (mnt, upper, work):
+        d.mkdir(parents=True, exist_ok=True)
+    opts = f"lowerdir={BASE},upperdir={upper},workdir={work}"
+    sudo(["mount", "-t", "overlay", "overlay", "-o", opts, str(mnt)])
+
+
+def unmount_overlay(name: str) -> None:
+    sudo(["umount", str(mount_point(name))])
+
+
+def heal_mounts() -> list[str]:
+    """Remount any worktree whose state exists but whose overlay is gone (CDE restart)."""
+    healed: list[str] = []
+    if not (BASE / ".git").exists():
+        return healed
+    mounted = overlay_mounts()
+    for name in worktree_names_from_state(STATE):
+        if mount_point(name) not in mounted:
+            mount_overlay(name)
+            healed.append(name)
+    if healed:
+        log(f"remounted: {', '.join(healed)}")
+    return healed
+
+
+def register_worktree_entry(name: str, commit: str) -> None:
+    """Point the overlay's `.git` at a fresh entry under MAIN/.git/worktrees/<name>.
+
+    `git worktree add` refuses a non-empty directory, so the entry is created at a
+    temporary path named after the worktree (which names the entry) and then both
+    pointers are rewritten to the mount point. Rewriting `.git` is the only copy-up.
+    """
+    mnt = mount_point(name)
+    git(["worktree", "prune"], MAIN)
+    reg_parent = STATE / name / "reg"
+    reg_tmp = reg_parent / name
+    reg_parent.mkdir(parents=True, exist_ok=True)
+    git(["worktree", "add", "--no-checkout", "--detach", str(reg_tmp), commit], MAIN)
+    pointer = (reg_tmp / ".git").read_text().strip()
+    if not pointer.startswith("gitdir: "):
+        raise WtError(f"unexpected .git pointer in {reg_tmp}: {pointer!r}")
+    gitdir = Path(pointer.removeprefix("gitdir: "))
+    shutil.rmtree(reg_parent)
+    (mnt / ".git").write_text(f"gitdir: {gitdir}\n")
+    (gitdir / "gitdir").write_text(f"{mnt / '.git'}\n")
+
+
+def worktree_status(name: str) -> dict[str, object]:
+    mnt = mount_point(name)
+    mounted = is_mounted(name)
+    info: dict[str, object] = {"name": name, "path": str(mnt), "mounted": mounted}
+    if mounted:
+        branch = git(["branch", "--show-current"], mnt)
+        info["branch"] = branch or f"detached@{git(['rev-parse', '--short', 'HEAD'], mnt)}"
+        info["dirty_files"] = len(git(["status", "--porcelain"], mnt).splitlines())
+        info["busy"] = bool(busy_processes(name))
+    info["upper_bytes"] = du_bytes(upper_dir(name))
+    return info
+
+
+# ----------------------------------------------------------------------- commands
+
+
+@dataclass
+class Timing:
+    step: str
+    seconds: float
+
+
+def timed(step: str, fn, timings: list[Timing]):
+    log(f"{step}…")
+    start = time.monotonic()
+    result = fn()
+    elapsed = time.monotonic() - start
+    timings.append(Timing(step, round(elapsed, 1)))
+    log(f"{step} done in {elapsed:.0f}s")
+    return result
+
+
+def cmd_base_init(args: argparse.Namespace) -> dict[str, object]:
+    require_environment()
+    if BASE.exists():
+        raise WtError(f"base already exists at {BASE}")
+    timings: list[Timing] = []
+    timed("fetch origin", lambda: git(["fetch", "-q", "origin", "main"], MAIN), timings)
+    timed(
+        f"git worktree add {BASE} ({args.ref})",
+        lambda: git(["worktree", "add", "--detach", str(BASE), args.ref], MAIN),
+        timings,
+    )
+    timed("just pp", lambda: run(["just", "pp"], cwd=BASE, capture=False), timings)
+    if args.warm == "typecheck":
+        # Repository-wide on purpose: the base exists to hold every package's
+        # declaration output so worktrees never materialize their dependencies.
+        timed(
+            "turbo typecheck (repo-wide)",
+            lambda: run(
+                ["turbo", "run", "typecheck", "--output-logs=errors-only"], cwd=BASE, capture=False
+            ),
+            timings,
+        )
+    return {
+        "base": str(BASE),
+        "commit": base_commit(),
+        "warm": args.warm,
+        "base_bytes": du_bytes(BASE),
+        "timings": [asdict(t) for t in timings],
+    }
+
+
+def cmd_base_warm(args: argparse.Namespace) -> dict[str, object]:
+    """Run the repo-wide typecheck on an existing base (for measuring pp-only vs full)."""
+    require_environment()
+    require_base()
+    if overlay_mounts() & {mount_point(n) for n in worktree_names_from_state(STATE)}:
+        # Lower layers must not change under a live overlay.
+        raise WtError("worktrees are mounted; remove them before warming the base")
+    timings: list[Timing] = []
+    timed(
+        "turbo typecheck (repo-wide)",
+        lambda: run(
+            ["turbo", "run", "typecheck", "--output-logs=errors-only"], cwd=BASE, capture=False
+        ),
+        timings,
+    )
+    return {"base_bytes": du_bytes(BASE), "timings": [asdict(t) for t in timings]}
+
+
+def cmd_create(args: argparse.Namespace) -> dict[str, object]:
+    require_environment()
+    require_base()
+    heal_mounts()
+    name = validate_name(args.name)
+    if (STATE / name).exists() or mount_point(name).exists():
+        raise WtError(f"worktree {name!r} already exists")
+    age = base_commit_age_seconds()
+    if age > STALE_BASE_SECONDS:
+        log(f"warning: base commit is {human_age(age)} old; consider `wt update`")
+
+    start = time.monotonic()
+    commit = base_commit()
+    mnt = mount_point(name)
+    try:
+        mount_overlay(name)
+        register_worktree_entry(name, commit)
+        git(["reset", "-q"], mnt)
+        if args.ref:
+            git(["checkout", "-q", args.ref], mnt)
+        else:
+            branch = default_branch(name)
+            if git(["branch", "--list", branch], MAIN):
+                raise WtError(f"branch {branch} already exists; use --ref {branch} to check it out")
+            git(["checkout", "-q", "-b", branch], mnt)
+    except Exception:
+        _destroy(name)
+        raise
+    elapsed = time.monotonic() - start
+    info = worktree_status(name)
+    info["create_seconds"] = round(elapsed, 1)
+    info["base_commit"] = commit
+    return info
+
+
+def _destroy(name: str) -> None:
+    if is_mounted(name):
+        unmount_overlay(name)
+    if (STATE / name).exists():
+        # work/ is root-owned by the kernel.
+        sudo(["rm", "-rf", str(STATE / name)])
+    mnt = mount_point(name)
+    if mnt.exists():
+        mnt.rmdir()
+    git(["worktree", "prune"], MAIN)
+
+
+def cmd_remove(args: argparse.Namespace) -> dict[str, object]:
+    require_environment()
+    heal_mounts()
+    name = validate_name(args.name)
+    if not (STATE / name).exists():
+        raise WtError(f"no worktree named {name!r}")
+    if is_mounted(name):
+        busy = busy_processes(name)
+        if busy:
+            raise WtError(f"worktree {name!r} is busy; stop these processes first:\n{busy}")
+        dirty = git(["status", "--porcelain"], mount_point(name))
+        if dirty and not args.force:
+            raise WtError(
+                f"worktree {name!r} has uncommitted changes; commit them or pass --force to discard:\n{dirty}"
+            )
+    _destroy(name)
+    return {"removed": name}
+
+
+def cmd_list(args: argparse.Namespace) -> dict[str, object]:
+    require_environment()
+    heal_mounts()
+    return {"worktrees": [worktree_status(n) for n in worktree_names_from_state(STATE)]}
+
+
+def cmd_up(args: argparse.Namespace) -> dict[str, object]:
+    require_environment()
+    return {"remounted": heal_mounts()}
+
+
+def cmd_status(args: argparse.Namespace) -> dict[str, object]:
+    require_environment()
+    heal_mounts()
+    info: dict[str, object] = {
+        "main": str(MAIN),
+        "disk_free_bytes": disk_free_bytes(MAIN),
+        "turbo_cache_bytes": du_bytes(Path(SHARED_ENV["TURBO_CACHE_DIR"])),
+        "pnpm_store_bytes": du_bytes(Path(SHARED_ENV["PNPM_STORE_DIR"])),
+        "worktrees": len(worktree_names_from_state(STATE)),
+    }
+    if (BASE / ".git").exists():
+        info["base"] = {
+            "path": str(BASE),
+            "commit": base_commit(),
+            "age": human_age(base_commit_age_seconds()),
+            "bytes": du_bytes(BASE),
+        }
+    else:
+        info["base"] = None
+    return info
+
+
+# ------------------------------------------------------------------------- output
+
+
+def render(command: str, result: dict[str, object]) -> str:
+    if command == "list":
+        rows = result["worktrees"]
+        if not rows:
+            return "no worktrees"
+        lines = []
+        for r in rows:
+            flags = []
+            if not r["mounted"]:
+                flags.append("UNMOUNTED")
+            if r.get("busy"):
+                flags.append("busy")
+            if r.get("dirty_files"):
+                flags.append(f"dirty({r['dirty_files']})")
+            lines.append(
+                f"{r['name']:<24} {r.get('branch', '-'):<40} {human_bytes(r['upper_bytes']):>8}  {' '.join(flags)}"
+            )
+        return "\n".join(lines)
+    if command == "create":
+        return f"{result['path']}  ({result['branch']}, {result['create_seconds']}s)"
+    if command == "remove":
+        return f"removed {result['removed']}"
+    if command == "up":
+        return f"remounted: {', '.join(result['remounted']) or 'nothing to do'}"
+    if command == "status":
+        base = result["base"]
+        base_line = (
+            f"base:        {base['path']} @ {base['commit'][:11]} ({base['age']} old, {human_bytes(base['bytes'])})"
+            if base
+            else "base:        none (run `wt base-init`)"
+        )
+        return "\n".join(
+            [
+                base_line,
+                f"worktrees:   {result['worktrees']}",
+                f"turbo cache: {human_bytes(result['turbo_cache_bytes'])}",
+                f"pnpm store:  {human_bytes(result['pnpm_store_bytes'])}",
+                f"disk free:   {human_bytes(result['disk_free_bytes'])}",
+            ]
+        )
+    if command in ("base-init", "base-warm"):
+        lines = [f"{t['step']}: {t['seconds']}s" for t in result["timings"]]
+        lines.append(f"base size: {human_bytes(result['base_bytes'])}")
+        return "\n".join(lines)
+    return json.dumps(result, indent=2)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="wt", description=__doc__.split("\n\n")[0])
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    s = sub.add_parser("base-init", help="build the warm base checkout (slow, once)")
+    s.add_argument("--ref", default="origin/main")
+    s.add_argument("--warm", choices=["pp", "typecheck"], default="typecheck")
+    s.set_defaults(fn=cmd_base_init)
+
+    s = sub.add_parser("base-warm", help="run the repo-wide typecheck on the existing base")
+    s.set_defaults(fn=cmd_base_warm)
+
+    s = sub.add_parser("create", help="create a worktree over the base (git-only, fast)")
+    s.add_argument("name")
+    s.add_argument("--ref", help=f"existing ref to check out (default: new {BRANCH_PREFIX}/<name>)")
+    s.set_defaults(fn=cmd_create)
+
+    s = sub.add_parser("remove", help="unmount and delete a worktree; its branch survives")
+    s.add_argument("name")
+    s.add_argument("--force", action="store_true", help="discard uncommitted changes")
+    s.set_defaults(fn=cmd_remove)
+
+    s = sub.add_parser("list", help="list worktrees")
+    s.set_defaults(fn=cmd_list)
+
+    s = sub.add_parser("status", help="base, caches, disk")
+    s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("up", help="remount worktrees after a CDE restart")
+    s.set_defaults(fn=cmd_up)
+    return p
+
+
+def main(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        result = args.fn(args)
+    except WtError as e:
+        if args.json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(f"wt: error: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2) if args.json else render(args.command, result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
