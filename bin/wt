@@ -766,7 +766,40 @@ def cmd_demote(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     return info
 
 
+CONFIG_KEYS = {
+    "warm": ("wt.warm", True),
+    "baseref": ("wt.baseRef", False),
+    "cachepath": ("wt.cachePath", True),
+    "statedir": ("wt.stateDir", False),
+}
+
+
+def config_key(name: str) -> tuple[str, bool]:
+    """Canonical git key and whether it is multi-valued, from a loosely spelled name."""
+    entry = CONFIG_KEYS.get(name.lower().removeprefix("wt."))
+    if entry is None:
+        raise WtError(f"unknown config key {name!r}; one of: {', '.join(v[0] for v in CONFIG_KEYS.values())}")
+    return entry
+
+
 def cmd_config(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
+    action = args.action or "show"
+    if action != "show":
+        if not args.key:
+            raise WtError(f"config {action} needs a key")
+        key, multi = config_key(args.key)
+        if action == "unset":
+            run(["git", "config", "--local", "--unset-all", key], cwd=repo.root, check=False)
+        else:
+            if not args.values:
+                raise WtError(f"config {action} {key} needs a value")
+            if not multi and (len(args.values) > 1 or action == "add"):
+                raise WtError(f"{key} takes a single value; use `wt config set {args.key} <value>`")
+            if action == "set":
+                run(["git", "config", "--local", "--unset-all", key], cwd=repo.root, check=False)
+            for value in args.values:
+                run(["git", "config", "--local", "--add", key, value], cwd=repo.root)
+        repo = resolve_repo(repo.root)
     return {
         "repo": str(repo.root),
         "wt.baseRef": repo.base_ref,
@@ -784,7 +817,6 @@ def guide_text(repo: Repo | None) -> str:
     wt_dir = str(repo.wt_dir) if repo else "<repo>.wt"
     base = str(repo.base) if repo else "<repo>.wt/.base"
     ref = repo.base_ref if repo else "origin/<default>"
-    warm = "\n".join(f"    {c}" for c in repo.warm) if repo and repo.warm else "    (none configured: plain checkout)"
     return f"""\
 wt: overlayfs worktrees for agents
 
@@ -797,8 +829,7 @@ THIS REPO
   main checkout   {root}
   worktrees       {wt_dir}/<branch>
   base            {base}   (tracks {ref})
-  warm commands run in the base by base-init and update:
-{warm}
+  `wt config` shows the warm commands run in the base by base-init and update.
 
 COORDINATOR PATTERN
   wt status                    base present? age warning past 24h means run `wt update`
@@ -808,17 +839,19 @@ COORDINATOR PATTERN
   -> dispatch a sub-agent WITHOUT worktree isolation; put the path in its prompt
      and include the sub-agent rules below
   wt list                      one line per worktree with busy / dirty flags
-  wt remove <branch>           once the branch is pushed; refuses if busy or dirty
+  wt remove <branch>           when the worktree is done; refuses if busy or dirty
                                (--force discards uncommitted changes; the branch survives)
 
-SUB-AGENT RULES (paste into the sub-agent prompt)
+SUB-AGENT RULES (adapt and paste into the sub-agent prompt)
   - Work only inside <path>. Do not touch {root} or {base}.
   - The base is already warmed; run scoped build/test commands normally and skip
     repo-wide setup unless something is stale.
   - Changing dependencies works but copies files instead of sharing them; avoid
     when not needed.
-  - Commit everything before finishing, then push the branch
-    (git push -u origin <branch>). Uncommitted changes block removal and update.
+  How work leaves a worktree (commit, push, or hand uncommitted changes back) is the
+  coordinator's and operator's call. The one constraint: a worktree with uncommitted
+  changes blocks `wt remove` and `wt update` until the changes are committed or
+  discarded with `wt remove --force`.
 
 KEEPING CURRENT
   wt update                    every worktree must be quiet and clean. Moves the base
@@ -831,12 +864,12 @@ KEEPING CURRENT
   wt up                        remount after a machine restart (every command self-heals too)
 
 SETUP FOR A NEW REPO
-  git config --local --add wt.warm '<command run in the base after checkout>'   (repeatable)
-  git config --local wt.baseRef origin/<branch>        (default: origin's HEAD)
-  git config --local --add wt.cachePath <path>         (sizes shown by `wt status`)
-  git config --local wt.stateDir <dir>                 only if the repo sits on an overlay
-                                                       filesystem (e.g. a container's /home)
-  wt base-init                 then `wt config` to review
+  wt config add warm '<command run in the base after checkout>'   (repeatable)
+  wt config set baseRef origin/<branch>        (default: origin's HEAD)
+  wt config add cachePath <path>               (sizes shown by `wt status`)
+  wt config set stateDir <dir>                 only if the repo sits on an overlay
+                                               filesystem (e.g. a container's /home)
+  wt base-init                 then `wt config` to review; `wt config unset <key>` to remove
 
 OUTPUT
   Add --json to any command for machine-readable output. Refusals exit 1 with a
@@ -946,7 +979,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_list)
     s = sub.add_parser("status", help="base, caches, disk")
     s.set_defaults(fn=cmd_status)
-    s = sub.add_parser("config", help="show this repo's wt configuration")
+    s = sub.add_parser(
+        "config",
+        help="show or change this repo's wt configuration",
+        description="wt config                      show\n"
+        "wt config set <key> <value>... replace the key's value(s)\n"
+        "wt config add <key> <value>    append to a multi-valued key (warm, cachePath)\n"
+        "wt config unset <key>          remove the key\n"
+        "keys: warm, baseRef, cachePath, stateDir",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    s.add_argument("action", nargs="?", choices=["set", "add", "unset"])
+    s.add_argument("key", nargs="?")
+    s.add_argument("values", nargs="*")
     s.set_defaults(fn=cmd_config)
     s = sub.add_parser("up", help="remount worktrees after a machine restart")
     s.set_defaults(fn=cmd_up)

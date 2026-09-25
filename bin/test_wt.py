@@ -126,13 +126,27 @@ class Formatting(unittest.TestCase):
     def test_guide_without_repo_uses_placeholders(self):
         text = wt.guide_text(None)
         self.assertIn("<repo>.wt", text)
-        self.assertIn("plain checkout", text)
+        self.assertIn("wt config", text)
 
-    def test_guide_with_repo_lists_warm_commands(self):
+    def test_guide_with_repo_uses_real_paths_and_no_warm_listing(self):
         repo = wt.Repo(root=Path("/w/x"), base_ref="origin/main", warm=["just pp", "turbo run typecheck"])
         text = wt.guide_text(repo)
         self.assertIn("/w/x.wt/<branch>", text)
-        self.assertIn("    just pp", text)
+        self.assertNotIn("just pp", text)
+        self.assertIn("uncommitted", text)
+        self.assertNotIn("git push", text)
+
+
+class ConfigKeys(unittest.TestCase):
+    def test_loose_spelling_and_multi_flag(self):
+        self.assertEqual(wt.config_key("warm"), ("wt.warm", True))
+        self.assertEqual(wt.config_key("wt.CachePath"), ("wt.cachePath", True))
+        self.assertEqual(wt.config_key("baseref"), ("wt.baseRef", False))
+        self.assertEqual(wt.config_key("stateDir"), ("wt.stateDir", False))
+
+    def test_unknown_key(self):
+        with self.assertRaises(wt.WtError):
+            wt.config_key("branchPrefix")
 
 
 if __name__ == "__main__":
