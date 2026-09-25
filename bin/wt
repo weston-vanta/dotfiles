@@ -829,7 +829,7 @@ THIS REPO
   main checkout   {root}
   worktrees       {wt_dir}/<branch>
   base            {base}   (tracks {ref})
-  `wt config` shows the warm commands run in the base by base-init and update.
+  wt config       prints current config for this repo
 
 COORDINATOR PATTERN
   wt status                    base present? age warning past 24h means run `wt update`
@@ -841,6 +841,9 @@ COORDINATOR PATTERN
   wt list                      one line per worktree with busy / dirty flags
   wt remove <branch>           when the worktree is done; refuses if busy or dirty
                                (--force discards uncommitted changes; the branch survives)
+  A worktree with uncommitted changes blocks `wt remove` and `wt update` until the
+  changes are committed or discarded; how work leaves a worktree (commit, push, or
+  hand changes back) is your call together with the operator.
 
 SUB-AGENT RULES (adapt and paste into the sub-agent prompt)
   - Work only inside <path>. Do not touch {root} or {base}.
@@ -848,10 +851,6 @@ SUB-AGENT RULES (adapt and paste into the sub-agent prompt)
     repo-wide setup unless something is stale.
   - Changing dependencies works but copies files instead of sharing them; avoid
     when not needed.
-  How work leaves a worktree (commit, push, or hand uncommitted changes back) is the
-  coordinator's and operator's call. The one constraint: a worktree with uncommitted
-  changes blocks `wt remove` and `wt update` until the changes are committed or
-  discarded with `wt remove --force`.
 
 KEEPING CURRENT
   wt update                    every worktree must be quiet and clean. Moves the base
