@@ -130,6 +130,7 @@ echo "==> Symlinking root dotfiles"
 create_symlink ".gitconfig" "$HOME/.gitconfig"
 create_symlink ".oh-my-zsh" "$HOME/.oh-my-zsh"
 create_symlink ".zshrc" "$HOME/.zshrc"
+create_symlink ".zshenv" "$HOME/.zshenv"
 
 echo "Setting zsh as the default shell."
 sudo chsh "$(id -un)" --shell "/usr/bin/zsh"
