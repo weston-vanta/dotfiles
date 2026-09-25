@@ -64,6 +64,18 @@ class FuserParsing(unittest.TestCase):
         self.assertEqual(wt.parse_fuser_pids("\n"), [])
 
 
+class MergeClassification(unittest.TestCase):
+    def test_up_to_date_wins(self):
+        self.assertEqual(wt.classify_merge(True, True), "up-to-date")
+        self.assertEqual(wt.classify_merge(False, True), "up-to-date")
+
+    def test_fast_forward_when_branch_behind(self):
+        self.assertEqual(wt.classify_merge(True, False), "fast-forward")
+
+    def test_diverged_needs_merge(self):
+        self.assertEqual(wt.classify_merge(False, False), "merge")
+
+
 class StateDiscovery(unittest.TestCase):
     def test_names_require_upper_dir(self):
         import tempfile

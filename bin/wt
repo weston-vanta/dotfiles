@@ -40,6 +40,12 @@ SHARED_ENV = {
     "TURBO_NO_UPDATE_NOTIFIER": "true",
 }
 
+# post-pull stops and recreates the dev `build.internal` container via docker
+# compose in its cwd. Run from the base, that would rebind the shared container
+# to the base's files and leave its watcher rewriting the base's dist. Pointing
+# compose at an empty project makes post-pull see no container and skip that.
+BASE_PP_ENV = {"COMPOSE_PROJECT_NAME": "wt-base-no-containers"}
+
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
@@ -317,17 +323,9 @@ def cmd_base_init(args: argparse.Namespace) -> dict[str, object]:
         lambda: git(["worktree", "add", "--detach", str(BASE), args.ref], MAIN),
         timings,
     )
-    timed("just pp", lambda: run(["just", "pp"], cwd=BASE, capture=False), timings)
+    timed("just pp", lambda: run(["just", "pp"], cwd=BASE, capture=False, env=BASE_PP_ENV), timings)
     if args.warm == "typecheck":
-        # Repository-wide on purpose: the base exists to hold every package's
-        # declaration output so worktrees never materialize their dependencies.
-        timed(
-            "turbo typecheck (repo-wide)",
-            lambda: run(
-                ["turbo", "run", "typecheck", "--output-logs=errors-only"], cwd=BASE, capture=False
-            ),
-            timings,
-        )
+        timed("turbo typecheck (repo-wide)", base_typecheck, timings)
     return {
         "base": str(BASE),
         "commit": base_commit(),
@@ -345,13 +343,7 @@ def cmd_base_warm(args: argparse.Namespace) -> dict[str, object]:
         # Lower layers must not change under a live overlay.
         raise WtError("worktrees are mounted; remove them before warming the base")
     timings: list[Timing] = []
-    timed(
-        "turbo typecheck (repo-wide)",
-        lambda: run(
-            ["turbo", "run", "typecheck", "--output-logs=errors-only"], cwd=BASE, capture=False
-        ),
-        timings,
-    )
+    timed("turbo typecheck (repo-wide)", base_typecheck, timings)
     return {"base_bytes": du_bytes(BASE), "timings": [asdict(t) for t in timings]}
 
 
@@ -454,6 +446,222 @@ def cmd_status(args: argparse.Namespace) -> dict[str, object]:
     return info
 
 
+# ------------------------------------------------------------------ update / promote
+
+
+def classify_merge(branch_is_ancestor_of_main: bool, main_is_ancestor_of_branch: bool) -> str:
+    """How to bring `main` into a branch: 'up-to-date', 'fast-forward', or 'merge'."""
+    if main_is_ancestor_of_branch:
+        return "up-to-date"
+    if branch_is_ancestor_of_main:
+        return "fast-forward"
+    return "merge"
+
+
+def tracked_dirty(path: Path) -> str:
+    """Porcelain status of tracked files only (untracked files don't block a checkout)."""
+    return git(["status", "--porcelain", "-uno"], path)
+
+
+def is_ancestor(ancestor: str, descendant: str, cwd: Path) -> bool:
+    return run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=cwd, check=False).returncode == 0
+
+
+def detach_head(mnt: Path, commit: str) -> None:
+    """Point HEAD at a commit without moving the branch it was on and without touching files."""
+    run(["git", "update-ref", "--no-deref", "HEAD", commit], cwd=mnt)
+
+
+def merge_main_into_branch(mnt: Path, branch: str, main_commit: str) -> str:
+    """Merge main into `branch` while HEAD is detached at main_commit with a clean tree.
+
+    The merge is computed in the object store first so the final checkout writes
+    only the branch's own changes into the overlay. On conflict, fall back to a
+    working-tree merge and leave it in progress for a human or agent to resolve.
+    Returns the action taken.
+    """
+    branch_commit = git(["rev-parse", branch], mnt)
+    action = classify_merge(
+        is_ancestor(branch_commit, main_commit, mnt), is_ancestor(main_commit, branch_commit, mnt)
+    )
+    if action == "fast-forward":
+        run(["git", "update-ref", f"refs/heads/{branch}", main_commit, branch_commit], cwd=mnt)
+    elif action == "merge":
+        tree = run(["git", "merge-tree", "--write-tree", branch_commit, main_commit], cwd=mnt, check=False)
+        if tree.returncode == 0:
+            merged_tree = tree.stdout.strip().splitlines()[0]
+            msg = f"Merge origin/main into {branch} (wt update)"
+            commit = run(
+                ["git", "commit-tree", merged_tree, "-p", branch_commit, "-p", main_commit, "-m", msg],
+                cwd=mnt,
+            ).stdout.strip()
+            run(["git", "update-ref", f"refs/heads/{branch}", commit, branch_commit], cwd=mnt)
+        elif tree.returncode == 1:
+            git(["checkout", "-q", branch], mnt)
+            run(["git", "merge", "--no-edit", main_commit], cwd=mnt, check=False)
+            return "conflict"
+        else:
+            raise WtError(f"git merge-tree failed for {branch}:\n{tree.stderr}")
+    git(["checkout", "-q", branch], mnt)
+    return action
+
+
+def restore_pointer(name: str) -> None:
+    """Re-create the overlay's `.git` file for an already-registered worktree entry."""
+    gitdir = MAIN / ".git" / "worktrees" / name
+    if not gitdir.is_dir():
+        raise WtError(f"git worktree entry missing for {name!r}: {gitdir}")
+    (mount_point(name) / ".git").write_text(f"gitdir: {gitdir}\n")
+
+
+def reset_upper(name: str) -> None:
+    """Drop a worktree's diff layer; everything committed lives in the shared .git."""
+    sudo(["rm", "-rf", str(upper_dir(name)), str(work_dir(name))])
+    upper_dir(name).mkdir(parents=True)
+    work_dir(name).mkdir(parents=True)
+
+
+def base_typecheck() -> None:
+    """Repo-wide typecheck in the base, on purpose: it must hold every package's
+    declaration output so worktrees never materialize their dependencies.
+
+    Output is captured because turbo prints the full package list even with
+    errors-only logs; the tail is surfaced only on failure.
+    """
+    proc = run(["turbo", "run", "typecheck", "--output-logs=errors-only"], cwd=BASE, check=False)
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-40:])
+        raise WtError(f"base typecheck failed ({proc.returncode}):\n{tail}")
+
+
+def warm_base(timings: list[Timing]) -> None:
+    timed("just pp (base)", lambda: run(["just", "pp"], cwd=BASE, capture=False, env=BASE_PP_ENV), timings)
+    timed("turbo typecheck (base, repo-wide)", base_typecheck, timings)
+
+
+def cmd_update(args: argparse.Namespace) -> dict[str, object]:
+    require_environment()
+    require_base()
+    heal_mounts()
+    names = worktree_names_from_state(STATE)
+
+    problems: list[str] = []
+    if git(["status", "--porcelain"], BASE):
+        problems.append(f"base {BASE} has local changes")
+    heads: dict[str, tuple[str | None, str]] = {}
+    for name in names:
+        mnt = mount_point(name)
+        busy = busy_processes(name)
+        if busy:
+            problems.append(f"{name}: busy\n{busy}")
+        if git(["status", "--porcelain"], mnt):
+            problems.append(f"{name}: uncommitted changes")
+        branch = git(["branch", "--show-current"], mnt) or None
+        heads[name] = (branch, git(["rev-parse", "HEAD"], mnt))
+    if problems:
+        raise WtError("update refused:\n" + "\n".join(problems))
+
+    timings: list[Timing] = []
+    timed("fetch origin", lambda: git(["fetch", "-q", "origin", "main"], MAIN), timings)
+    old_base = base_commit()
+    new_base = git(["rev-parse", "origin/main"], MAIN)
+
+    for name in names:
+        unmount_overlay(name)
+    results: dict[str, str] = {}
+    try:
+        if new_base != old_base:
+            timed(
+                f"base checkout {new_base[:11]}",
+                lambda: git(["checkout", "-q", "--detach", new_base], BASE),
+                timings,
+            )
+        warm_base(timings)
+    finally:
+        # Whatever happened to the base, give the worktrees back.
+        for name in names:
+            branch, head = heads[name]
+            try:
+                reset_upper(name)
+                mount_overlay(name)
+                restore_pointer(name)
+                mnt = mount_point(name)
+                detach_head(mnt, base_commit())
+                git(["reset", "-q"], mnt)
+                if branch is None:
+                    git(["checkout", "-q", "--detach", head], mnt)
+                    results[name] = "detached (kept)"
+                elif args.no_merge:
+                    git(["checkout", "-q", branch], mnt)
+                    results[name] = "restored (no merge)"
+                else:
+                    results[name] = merge_main_into_branch(mnt, branch, base_commit())
+            except WtError as e:
+                results[name] = f"FAILED: {e}"
+    return {
+        "base": {"old": old_base, "new": base_commit()},
+        "worktrees": [{"name": n, "branch": heads[n][0], "result": results.get(n, "?")} for n in names],
+        "timings": [asdict(t) for t in timings],
+    }
+
+
+def cmd_promote(args: argparse.Namespace) -> dict[str, object]:
+    require_environment()
+    heal_mounts()
+    name = validate_name(args.name)
+    if not (STATE / name).exists():
+        raise WtError(f"no worktree named {name!r}")
+    mnt = mount_point(name)
+    busy = busy_processes(name)
+    if busy:
+        raise WtError(f"worktree {name!r} is busy; stop these processes first:\n{busy}")
+    branch = git(["branch", "--show-current"], mnt)
+    if not branch:
+        raise WtError(f"worktree {name!r} is detached; nothing to promote")
+    dirty = git(["status", "--porcelain"], mnt)
+    if dirty:
+        if not args.force:
+            raise WtError(f"worktree {name!r} has uncommitted changes; commit them or pass --force to discard:\n{dirty}")
+        git(["reset", "-q", "--hard"], mnt)
+        git(["clean", "-fdq"], mnt)
+    main_dirty = tracked_dirty(MAIN)
+    if main_dirty:
+        raise WtError(f"main checkout has uncommitted changes; commit or stash them first:\n{main_dirty}")
+    previous = git(["branch", "--show-current"], MAIN) or git(["rev-parse", "HEAD"], MAIN)
+
+    git(["checkout", "-q", "--detach"], mnt)
+    proc = run(["git", "checkout", "-q", branch], cwd=MAIN, check=False)
+    if proc.returncode != 0:
+        git(["checkout", "-q", branch], mnt)
+        raise WtError(f"could not check out {branch} in {MAIN}:\n{proc.stderr.strip()}")
+    _destroy(name)
+    return {"promoted": name, "branch": branch, "main_was": previous}
+
+
+def cmd_demote(args: argparse.Namespace) -> dict[str, object]:
+    require_environment()
+    require_base()
+    heal_mounts()
+    branch = git(["branch", "--show-current"], MAIN)
+    if not branch or branch == "main":
+        raise WtError("main checkout must be on a feature branch to demote")
+    name = validate_name(args.name or branch.removeprefix(f"{BRANCH_PREFIX}/").replace("/", "-"))
+    if (STATE / name).exists() or mount_point(name).exists():
+        raise WtError(f"worktree {name!r} already exists")
+    main_dirty = tracked_dirty(MAIN)
+    if main_dirty:
+        raise WtError(f"main checkout has uncommitted changes; commit or stash them first:\n{main_dirty}")
+
+    git(["checkout", "-q", "main"], MAIN)
+    try:
+        info = cmd_create(argparse.Namespace(name=name, ref=branch))
+    except Exception:
+        git(["checkout", "-q", branch], MAIN)
+        raise
+    info["demoted"] = branch
+    return info
+
+
 # ------------------------------------------------------------------------- output
 
 
@@ -501,6 +709,20 @@ def render(command: str, result: dict[str, object]) -> str:
         lines = [f"{t['step']}: {t['seconds']}s" for t in result["timings"]]
         lines.append(f"base size: {human_bytes(result['base_bytes'])}")
         return "\n".join(lines)
+    if command == "update":
+        b = result["base"]
+        lines = [f"base: {b['old'][:11]} -> {b['new'][:11]}" + ("  (unchanged)" if b["old"] == b["new"] else "")]
+        lines += [f"{t['step']}: {t['seconds']}s" for t in result["timings"]]
+        for w in result["worktrees"]:
+            lines.append(f"{w['name']:<24} {w['branch'] or '-':<40} {w['result']}")
+        conflicts = [w["name"] for w in result["worktrees"] if w["result"] == "conflict"]
+        if conflicts:
+            lines.append(f"CONFLICTS left in place, resolve and commit in: {', '.join(conflicts)}")
+        return "\n".join(lines)
+    if command == "promote":
+        return f"promoted {result['promoted']}: {MAIN} is now on {result['branch']} (was {result['main_was']})"
+    if command == "demote":
+        return f"{result['path']}  ({result['branch']}, {result['create_seconds']}s); {MAIN} is back on main"
     return json.dumps(result, indent=2)
 
 
@@ -535,6 +757,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("up", help="remount worktrees after a CDE restart")
     s.set_defaults(fn=cmd_up)
+
+    s = sub.add_parser(
+        "update",
+        help="move the base to origin/main and merge main into every worktree branch (needs all quiet and clean)",
+    )
+    s.add_argument("--no-merge", action="store_true", help="restore branches as-is instead of merging main")
+    s.set_defaults(fn=cmd_update)
+
+    s = sub.add_parser("promote", help="check a worktree's branch out in the main checkout and remove the worktree")
+    s.add_argument("name")
+    s.add_argument("--force", action="store_true", help="discard the worktree's uncommitted changes")
+    s.set_defaults(fn=cmd_promote)
+
+    s = sub.add_parser("demote", help="move the main checkout's branch into a new worktree; main returns to main")
+    s.add_argument("name", nargs="?", help=f"worktree name (default: branch without {BRANCH_PREFIX}/)")
+    s.set_defaults(fn=cmd_demote)
     return p
 
 
