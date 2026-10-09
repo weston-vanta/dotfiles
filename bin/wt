@@ -896,6 +896,10 @@ COORDINATOR PATTERN
   A worktree with uncommitted changes blocks `wt remove` and `wt update` until the
   changes are committed or discarded; how work leaves a worktree (commit, push, or
   hand changes back) is your call together with the operator.
+  Don't run builds in {root}: some build caches then treat every
+  worktree's build outputs as out of date and rewrite them, so each worktree ends up
+  storing its own copy. `wt update` fixes this: it re-runs the warm commands in the
+  base and discards the copies.
 
 SUB-AGENT RULES (adapt and paste into the sub-agent prompt)
   - Work only inside <path>. Do not touch {root} or {base}.
