@@ -1,5 +1,11 @@
 # Sourced by every zsh, interactive or not, so tools and agents see the same env.
 
+# Linux: put Homebrew on the PATH. Here rather than .zshrc so that non-interactive
+# shells (bootstrap's install scripts, agents) can find brew-installed tools.
+if [[ -f /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv zsh)"
+fi
+
 # Personal tools (e.g. `wt`, overlayfs worktrees)
 export PATH=$HOME/dotfiles/bin:$PATH
 
