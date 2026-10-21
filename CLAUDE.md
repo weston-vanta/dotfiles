@@ -20,6 +20,8 @@ The bootstrap script symlinks everything from this repo into `$HOME`:
 
 It then runs `install-scripts/*.zsh`, which install Neovim and flow.
 
+On cloud dev environments with a shared network mount at `$EFS_MOUNT_POINT`, `post-start-install.sh` runs after the mount is set up. It replaces the paths listed at the top of the script with symlinks into the mount so they persist across environments, then re-links the agent config into the shared `~/.claude`. Only paths belong in this repo, never the mount's contents.
+
 `.config/herdr/` is the one `.config` entry linked file-by-file rather than as a
 directory, because `~/.config/herdr/` also holds sockets, logs, session state, and
 built plugins. Only `config.toml` belongs in this repo.
