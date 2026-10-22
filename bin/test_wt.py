@@ -97,8 +97,107 @@ class StateDiscovery(unittest.TestCase):
         self.assertEqual(wt.worktree_names_from_state(Path("/nonexistent/x")), [])
 
 
+def entry(kind, links, disk_bytes, path, size=None):
+    return wt.Entry(kind, links, disk_bytes, disk_bytes if size is None else size, path)
+
+
+def lower(links, disk_bytes, size=None, kind="f"):
+    return wt.LowerFile(kind == "d", kind == "f", links, disk_bytes, disk_bytes if size is None else size)
+
+
+class DiskAccounting(unittest.TestCase):
+    def test_tally_splits_hardlinked_files(self):
+        out = "d 5 8\nf 1 16\nf 3 64\nl 1 0\nc 1 0\n"
+        self.assertEqual(wt.tally_usage(out), wt.Usage(unique_bytes=24 * 512, shared_bytes=64 * 512))
+
+    def test_parse_entries_keeps_spaces_and_root(self):
+        out = "d 4 8 4096 \0f 1 8 3000 dir/a file.txt\0c 1 0 0 gone\0"
+        self.assertEqual(
+            wt.parse_find_entries(out),
+            [
+                wt.Entry("d", 4, 4096, 4096, ""),
+                wt.Entry("f", 1, 4096, 3000, "dir/a file.txt"),
+                wt.Entry("c", 1, 0, 0, "gone"),
+            ],
+        )
+
+    def test_summarize_upper_overlap(self):
+        base = {
+            "changed": lower(1, 4000),
+            "deleted": lower(1, 500),
+            "from-store": lower(2, 9000),
+            "pkg": lower(1, 0, kind="d"),
+        }
+        entries = [
+            entry("d", 3, 100, ""),
+            entry("d", 2, 100, "pkg"),
+            entry("f", 1, 4000, "changed"),
+            entry("c", 1, 0, "deleted"),
+            entry("f", 1, 9000, "from-store"),
+            entry("f", 2, 7000, "pkg/linked"),
+            entry("f", 1, 300, "new"),
+        ]
+        usage = wt.summarize_upper(entries, base.get)
+        self.assertEqual(usage.unique_bytes, 100 + 100 + 4000 + 9000 + 300)
+        self.assertEqual(usage.shared_bytes, 7000)
+        # Only singly-linked base files are freed by replacing them; the store copy stays.
+        self.assertEqual(usage.shadowed_bytes, 4000 + 500)
+        self.assertIsNone(usage.identical_bytes)
+
+    def test_identical_needs_same_size_and_content(self):
+        base = {"same": lower(1, 4096, 10), "resized": lower(1, 4096, 10), "edited": lower(1, 4096, 10)}
+        entries = [
+            entry("f", 1, 4096, "same", 10),
+            entry("f", 1, 4096, "resized", 11),
+            entry("f", 1, 4096, "edited", 10),
+            entry("f", 1, 4096, "new", 10),
+        ]
+        compared = []
+
+        def same(rel):
+            compared.append(rel)
+            return rel == "same"
+
+        usage = wt.summarize_upper(entries, base.get, same)
+        self.assertEqual(usage.identical_bytes, 4096)
+        self.assertEqual(compared, ["same", "edited"])
+
+    def test_savings_against_plain_checkouts(self):
+        uppers = [wt.UpperUsage(10, 0, 4, None), wt.UpperUsage(30, 5, 20, None)]
+        self.assertEqual(
+            wt.estimate_savings(100, uppers),
+            {"wt_bytes": 140, "git_bytes": (100 - 4 + 10) + (100 - 20 + 30), "saved_bytes": 76},
+        )
+
+    def test_usage_row_warns_past_half_a_checkout(self):
+        self.assertFalse(wt.worktree_usage_row("a", 100, wt.UpperUsage(50, 0, 0, None))["over_warning"])
+        row = wt.worktree_usage_row("b", 100, wt.UpperUsage(51, 0, 30, None))
+        self.assertTrue(row["over_warning"])
+        self.assertEqual(row["saved_bytes"], 70)
+
+    def test_base_stats_round_trip_and_garbage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = wt.Repo(root=Path(tmp) / "r", base_ref="origin/main")
+            self.assertIsNone(wt.read_base_stats(repo))
+            repo.wt_dir.mkdir()
+            repo.base_stats_file.write_text("not json")
+            self.assertIsNone(wt.read_base_stats(repo))
+            repo.base_stats_file.write_text('{"commit": "abc", "unique_bytes": 1, "shared_bytes": 2, "warm_seconds": null}')
+            self.assertEqual(wt.read_base_stats(repo), wt.BaseStats("abc", 1, 2, None))
+
+
+class Parallel(unittest.TestCase):
+    def test_results_keyed_by_job(self):
+        self.assertEqual(wt.run_parallel("x", {"a": lambda: 1, "b": lambda: 2}), {"a": 1, "b": 2})
+        self.assertEqual(wt.run_parallel("x", {}), {})
+
+    def test_progress_line(self):
+        self.assertEqual(wt.progress_line("measuring", 3, 9, 12.4), "wt: measuring 3/9 (12s)")
+
+
 class Formatting(unittest.TestCase):
     def test_human_age(self):
+        self.assertEqual(wt.human_age(42), "42s")
         self.assertEqual(wt.human_age(90), "1m")
         self.assertEqual(wt.human_age(5400), "1.5h")
         self.assertEqual(wt.human_age(3 * 86400), "3.0d")
@@ -114,14 +213,72 @@ class Formatting(unittest.TestCase):
             {
                 "repo": "/r",
                 "worktrees": [
-                    {"name": "a", "path": "/r.wt/a", "mounted": True, "branch": "a", "dirty_files": 2, "busy": True, "upper_bytes": 1024},
-                    {"name": "b", "path": "/r.wt/b", "mounted": False, "upper_bytes": 0},
+                    {"name": "a", "path": "/r.wt/a", "mounted": True, "branch": "a", "dirty_files": 2, "busy": True},
+                    {"name": "b", "path": "/r.wt/b", "mounted": False},
                 ],
             },
         )
         self.assertIn("dirty(2)", out)
         self.assertIn("busy", out)
         self.assertIn("UNMOUNTED", out)
+        self.assertNotIn("identical", out)
+
+    def test_render_list_sizes(self):
+        row = {"name": "a", "path": "/r.wt/a", "mounted": True, "branch": "a", "dirty_files": 0, "busy": False}
+        out = wt.render("list", {"repo": "/r", "worktrees": [{**row, "disk_bytes": 2 * 1024**3, "identical_bytes": 512 * 1024**2}]})
+        self.assertIn("2.0G", out)
+        self.assertIn("(512.0M identical to base)", out)
+
+    def status_result(self, **overrides):
+        result = {
+            "repo": "/r",
+            "base_ref": "origin/main",
+            "warm": ["just pp"],
+            "disk_free_bytes": 50 * 1024**3,
+            "caches": [{"path": "/store", "bytes": 5 * 1024**3}],
+            "base": {
+                "path": "/r.wt/.base",
+                "age": "1.0d",
+                "commit": "c1b7927ae59abcdef",
+                "unique_bytes": 3 * 1024**3,
+                "shared_bytes": 6 * 1024**3,
+                "warm_seconds": 840.0,
+            },
+            "worktrees": [
+                wt.worktree_usage_row("small", 3 * 1024**3, wt.UpperUsage(1024**3, 0, 0, None)),
+                wt.worktree_usage_row("big", 3 * 1024**3, wt.UpperUsage(2 * 1024**3, 0, 1024**3, None)),
+            ],
+            "savings": {"wt_bytes": 6 * 1024**3, "git_bytes": 8 * 1024**3, "saved_bytes": 2 * 1024**3},
+        }
+        result.update(overrides)
+        return result
+
+    def test_render_status_savings_and_warning(self):
+        out = wt.render("status", self.status_result())
+        self.assertIn("3.0G on disk, plus 6.0G hardlinked", out)
+        self.assertIn("14m per run", out)
+        self.assertIn("33% of a checkout", out)
+        self.assertEqual(out.count("OVER 50%"), 1)
+        self.assertIn("wt list --waste", out)
+        self.assertIn("~2.0G saved vs `git worktree add`", out)
+        self.assertIn("cache:       /store 5.0G", out)
+
+    def test_render_status_untimed_warm_and_net_cost(self):
+        out = wt.render(
+            "status",
+            self.status_result(
+                worktrees=[], savings={"wt_bytes": 4 * 1024**3, "git_bytes": 3 * 1024**3, "saved_bytes": -(1024**3)}
+            )
+            | {"base": {**self.status_result()["base"], "warm_seconds": None}},
+        )
+        self.assertIn("not timed yet", out)
+        self.assertIn("~1.0G more vs", out)
+        self.assertNotIn("OVER", out)
+
+    def test_render_status_without_base(self):
+        out = wt.render("status", self.status_result(base=None, worktrees=[], savings=None, caches=[]))
+        self.assertIn("none (run `wt base-init`)", out)
+        self.assertIn("disk free", out)
 
     def test_guide_without_repo_uses_placeholders(self):
         text = wt.guide_text(None)

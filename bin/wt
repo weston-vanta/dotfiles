@@ -9,6 +9,7 @@ Layout, one sibling directory per repo:
   <repo>/                 main checkout, never touched
   <repo>.wt/<branch>      mount point handed to agents (nested for a/b names)
   <repo>.wt/.base         base: detached git worktree at a default-branch commit
+  <repo>.wt/.base-stats.json  base disk usage and warm time, recorded when the base changes
   <repo>.wt/.state/<branch>/{upper,work}
 
 The repo is resolved from the current directory (or --repo), including from
@@ -28,17 +29,33 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import filecmp
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import threading
 import time
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
 STALE_BASE_SECONDS = 24 * 3600
 REMOTE = "origin"
+# A worktree's own files past this share of a full checkout usually mean it rebuilt
+# or reinstalled what the base already has.
+CHECKOUT_FRACTION_WARNING = 0.5
+# find -printf formats: type, link count, 512-byte blocks, [size, path relative to the start dir].
+FIND_USAGE_FORMAT = r"%y %n %b\n"
+FIND_ENTRY_FORMAT = r"%y %n %b %s %P\0"
+# Internal subcommand that measures one upper dir; kept out of argparse so it stays hidden.
+MEASURE_UPPER_COMMAND = "_measure-upper"
+
+T = TypeVar("T")
 
 
 class WtError(Exception):
@@ -63,6 +80,10 @@ class Repo:
     @property
     def base(self) -> Path:
         return self.wt_dir / ".base"
+
+    @property
+    def base_stats_file(self) -> Path:
+        return self.wt_dir / ".base-stats.json"
 
     @property
     def state(self) -> Path:
@@ -156,6 +177,8 @@ def classify_merge(branch_is_ancestor_of_main: bool, main_is_ancestor_of_branch:
 
 
 def human_age(seconds: float) -> str:
+    if seconds < 60:
+        return f"{int(seconds)}s"
     if seconds < 3600:
         return f"{int(seconds // 60)}m"
     if seconds < 86400:
@@ -170,6 +193,146 @@ def human_bytes(n: int) -> str:
             return f"{size:.0f}{unit}" if unit in ("B", "K") else f"{size:.1f}{unit}"
         size /= 1024
     return f"{size:.1f}T"
+
+
+def progress_line(label: str, done: int, total: int, elapsed: float) -> str:
+    return f"wt: {label} {done}/{total} ({elapsed:.0f}s)"
+
+
+# Disk accounting counts allocated blocks, not file sizes, and leaves out regular files
+# with more than one link: those are hardlinked from a package store, which a plain
+# `git worktree add` would share too.
+
+
+@dataclass(frozen=True)
+class Usage:
+    unique_bytes: int
+    shared_bytes: int
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One line of FIND_ENTRY_FORMAT output. kind is find's %y: f, d, l, or c (an overlay whiteout)."""
+
+    kind: str
+    links: int
+    disk_bytes: int
+    size: int
+    path: str
+
+    @property
+    def shared(self) -> bool:
+        return self.kind == "f" and self.links > 1
+
+
+@dataclass(frozen=True)
+class LowerFile:
+    """What the base holds at a path an upper layer also has."""
+
+    is_dir: bool
+    is_regular: bool
+    links: int
+    disk_bytes: int
+    size: int
+
+
+@dataclass(frozen=True)
+class UpperUsage:
+    unique_bytes: int
+    shared_bytes: int
+    # Base bytes this layer replaces or deletes: a plain checkout frees them, an overlay keeps both.
+    shadowed_bytes: int
+    # Copied-up files byte-identical to the base; None when not checked.
+    identical_bytes: int | None
+
+
+@dataclass(frozen=True)
+class BaseStats:
+    commit: str
+    unique_bytes: int
+    shared_bytes: int
+    # Total of the wt.warm commands' run time; None until a warm has been timed.
+    warm_seconds: float | None
+
+
+def tally_usage(find_output: str) -> Usage:
+    """Usage from FIND_USAGE_FORMAT output."""
+    unique = shared = 0
+    for line in find_output.splitlines():
+        kind, links, blocks = line.split(" ")
+        if kind == "f" and int(links) > 1:
+            shared += int(blocks) * 512
+        else:
+            unique += int(blocks) * 512
+    return Usage(unique, shared)
+
+
+def parse_find_entries(find_output: str) -> list[Entry]:
+    """Entries from FIND_ENTRY_FORMAT output."""
+    entries: list[Entry] = []
+    for record in find_output.split("\0"):
+        if record:
+            kind, links, blocks, size, path = record.split(" ", 4)
+            entries.append(Entry(kind, int(links), int(blocks) * 512, int(size), path))
+    return entries
+
+
+def summarize_upper(
+    entries: Iterable[Entry],
+    lower_file: Callable[[str], LowerFile | None],
+    same_content: Callable[[str], bool] | None = None,
+) -> UpperUsage:
+    """Disk usage of an upper layer and how it overlaps the base.
+
+    A whiteout over a whole base directory counts only the directory entry, not its contents.
+    """
+    unique = shared = shadowed = identical = 0
+    for e in entries:
+        if e.shared:
+            shared += e.disk_bytes
+        else:
+            unique += e.disk_bytes
+        if e.kind == "d" or not e.path:
+            continue
+        lower = lower_file(e.path)
+        if lower is None or lower.is_dir:
+            continue
+        if lower.links == 1:
+            shadowed += lower.disk_bytes
+        if (
+            same_content is not None
+            and e.kind == "f"
+            and e.links == 1
+            and lower.is_regular
+            and e.size == lower.size
+            and same_content(e.path)
+        ):
+            identical += e.disk_bytes
+    return UpperUsage(unique, shared, shadowed, identical if same_content is not None else None)
+
+
+def estimate_savings(base_unique: int, uppers: list[UpperUsage]) -> dict[str, int]:
+    """Disk use of the worktrees under wt versus one warmed `git worktree add` checkout each.
+
+    A plain checkout costs the base's unshared bytes, minus what its branch replaced or
+    deleted, plus the branch's own files. The main checkout exists either way.
+    """
+    wt_bytes = base_unique + sum(u.unique_bytes for u in uppers)
+    git_bytes = sum(base_unique - u.shadowed_bytes + u.unique_bytes for u in uppers)
+    return {"wt_bytes": wt_bytes, "git_bytes": git_bytes, "saved_bytes": git_bytes - wt_bytes}
+
+
+def worktree_usage_row(name: str, base_unique: int, upper: UpperUsage) -> dict[str, object]:
+    fraction = upper.unique_bytes / base_unique if base_unique else 0.0
+    return {
+        "name": name,
+        "disk_bytes": upper.unique_bytes,
+        "shared_bytes": upper.shared_bytes,
+        "shadowed_bytes": upper.shadowed_bytes,
+        "saved_bytes": base_unique - upper.shadowed_bytes,
+        "checkout_fraction": round(fraction, 3),
+        "over_warning": fraction > CHECKOUT_FRACTION_WARNING,
+    }
 
 
 # ------------------------------------------------------------------------ effects
@@ -191,6 +354,8 @@ def run(
         cmd,
         cwd=str(cwd) if cwd else None,
         text=True,
+        # File listings can hold names that aren't valid UTF-8; keep them round-trippable.
+        errors="surrogateescape",
         capture_output=capture,
         stdout=None if capture else sys.stderr,
     )
@@ -306,10 +471,129 @@ def is_mounted(repo: Repo, name: str) -> bool:
 
 
 def du_bytes(path: Path) -> int:
+    """Allocated disk bytes under path."""
     if not path.exists():
         return 0
-    out = sudo(["du", "-sb", str(path)]).stdout.split()
+    out = sudo(["du", "-sB1", str(path)]).stdout.split()
     return int(out[0]) if out else 0
+
+
+class Progress:
+    """A self-redrawing stderr line for slow commands; drawn only on a terminal, after a second."""
+
+    def __init__(self, label: str, total: int) -> None:
+        self.label, self.total, self.done = label, total, 0
+        self.start = time.monotonic()
+        self.enabled = sys.stderr.isatty()
+        self.drawn = False
+        self.lock = threading.Lock()
+        self.stopped = threading.Event()
+        self.ticker = threading.Thread(target=self._tick, daemon=True)
+
+    def __enter__(self) -> Progress:
+        if self.enabled:
+            self.ticker.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stopped.set()
+        if self.enabled:
+            self.ticker.join()
+        if self.drawn:
+            sys.stderr.write("\r\x1b[2K")
+            sys.stderr.flush()
+
+    def advance(self) -> None:
+        with self.lock:
+            self.done += 1
+
+    def _tick(self) -> None:
+        while not self.stopped.wait(0.25):
+            elapsed = time.monotonic() - self.start
+            if elapsed >= 1:
+                with self.lock:
+                    line = progress_line(self.label, self.done, self.total, elapsed)
+                sys.stderr.write(f"\r\x1b[2K{line}")
+                sys.stderr.flush()
+                self.drawn = True
+
+
+def run_parallel(label: str, jobs: dict[str, Callable[[], T]]) -> dict[str, T]:
+    """Run independent slow checks concurrently, showing progress, and return results by key."""
+    if not jobs:
+        return {}
+    results: dict[str, T] = {}
+    with Progress(label, len(jobs)) as progress, ThreadPoolExecutor(max_workers=min(len(jobs), 8)) as pool:
+        futures = {pool.submit(fn): key for key, fn in jobs.items()}
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+            progress.advance()
+    return results
+
+
+def measure_tree(path: Path) -> Usage:
+    if not path.exists():
+        return Usage(0, 0)
+    return tally_usage(sudo(["find", str(path), "-printf", FIND_USAGE_FORMAT]).stdout)
+
+
+def lower_file(path: str) -> LowerFile | None:
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    return LowerFile(
+        is_dir=stat.S_ISDIR(st.st_mode),
+        is_regular=stat.S_ISREG(st.st_mode),
+        links=st.st_nlink,
+        disk_bytes=st.st_blocks * 512,
+        size=st.st_size,
+    )
+
+
+def measure_upper_here(upper: Path, base: Path, check_identical: bool) -> UpperUsage:
+    """MEASURE_UPPER_COMMAND's work, run as root so every copied-up file is readable."""
+    entries = parse_find_entries(run(["find", str(upper), "-printf", FIND_ENTRY_FORMAT]).stdout)
+    # String paths: pathlib joins cost several times the lstat across hundreds of thousands of files.
+    upper_prefix, base_prefix = f"{upper}/", f"{base}/"
+    compare = (lambda rel: filecmp.cmp(upper_prefix + rel, base_prefix + rel, shallow=False)) if check_identical else None
+    return summarize_upper(entries, lambda rel: lower_file(base_prefix + rel), compare)
+
+
+def measure_upper(repo: Repo, name: str, check_identical: bool) -> UpperUsage:
+    """Measure in a separate process: the per-file work is CPU-bound, and threads share one GIL."""
+    upper = repo.upper_dir(name)
+    if not upper.exists():
+        return UpperUsage(0, 0, 0, 0 if check_identical else None)
+    cmd = [sys.executable, str(Path(__file__).resolve()), MEASURE_UPPER_COMMAND, str(upper), str(repo.base)]
+    out = sudo([*cmd, *(["--identical"] if check_identical else [])]).stdout
+    return UpperUsage(**json.loads(out))
+
+
+def read_base_stats(repo: Repo) -> BaseStats | None:
+    try:
+        return BaseStats(**json.loads(repo.base_stats_file.read_text()))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def record_base_stats(repo: Repo, warm_seconds: float | None) -> BaseStats:
+    """Measure the base and save it; without a new warm time, keep the last one as the estimate."""
+    usage = measure_tree(repo.base)
+    if warm_seconds is None:
+        previous = read_base_stats(repo)
+        warm_seconds = previous.warm_seconds if previous else None
+    stats = BaseStats(base_commit(repo), usage.unique_bytes, usage.shared_bytes, warm_seconds)
+    repo.base_stats_file.write_text(json.dumps(asdict(stats), indent=2) + "\n")
+    return stats
+
+
+def current_base_stats(repo: Repo) -> BaseStats:
+    """Saved base stats, re-measured when the base has moved since they were recorded."""
+    stats = read_base_stats(repo)
+    if stats is None or stats.commit != base_commit(repo):
+        stats = record_base_stats(repo, None)
+    return stats
 
 
 def busy_pids(repo: Repo, name: str) -> list[int]:
@@ -501,7 +785,7 @@ def destroy(repo: Repo, name: str) -> None:
     git(["worktree", "prune"], repo.root)
 
 
-def worktree_status(repo: Repo, name: str) -> dict[str, object]:
+def worktree_status(repo: Repo, name: str, size: bool = False, identical: bool = False) -> dict[str, object]:
     mnt = repo.mount_point(name)
     mounted = is_mounted(repo, name)
     info: dict[str, object] = {"name": name, "path": str(mnt), "mounted": mounted}
@@ -509,7 +793,11 @@ def worktree_status(repo: Repo, name: str) -> dict[str, object]:
         info["branch"] = current_branch(mnt) or f"detached@{git(['rev-parse', '--short', 'HEAD'], mnt)}"
         info["dirty_files"] = len(dirty(mnt).splitlines())
         info["busy"] = bool(busy_pids(repo, name))
-    info["upper_bytes"] = du_bytes(repo.upper_dir(name))
+    if size or identical:
+        usage = measure_upper(repo, name, check_identical=identical)
+        info["disk_bytes"] = usage.unique_bytes
+        if usage.identical_bytes is not None:
+            info["identical_bytes"] = usage.identical_bytes
     return info
 
 
@@ -534,13 +822,18 @@ def fetch(repo: Repo, timings: Timings) -> None:
         git(["fetch", "-q", REMOTE], repo.root)
 
 
-def run_warm_commands(repo: Repo, timings: Timings) -> None:
-    """Run the repo's configured wt.warm commands in the base, streaming their output."""
+def run_warm_commands(repo: Repo, timings: Timings) -> float:
+    """Run the repo's configured wt.warm commands in the base, streaming their output.
+
+    Returns their total run time in seconds.
+    """
     if not repo.warm:
         log("no wt.warm commands configured; base is a plain checkout")
+    start = time.monotonic()
     for cmd in repo.warm:
         with timed(f"warm: {cmd}", timings):
             run(["sh", "-c", cmd], cwd=repo.base, capture=False)
+    return round(time.monotonic() - start, 1)
 
 
 def detach_head(mnt: Path, commit: str) -> None:
@@ -594,13 +887,9 @@ def cmd_base_init(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     fetch(repo, timings)
     with timed(f"git worktree add {repo.base} ({repo.base_ref})", timings):
         git(["worktree", "add", "--detach", str(repo.base), repo.base_ref], repo.root)
-    run_warm_commands(repo, timings)
-    return {
-        "base": str(repo.base),
-        "commit": base_commit(repo),
-        "base_bytes": du_bytes(repo.base),
-        "timings": timings,
-    }
+    warm_seconds = run_warm_commands(repo, timings)
+    stats = record_base_stats(repo, warm_seconds)
+    return {"base": str(repo.base), "commit": stats.commit, "base_stats": asdict(stats), "timings": timings}
 
 
 def cmd_base_warm(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
@@ -610,8 +899,8 @@ def cmd_base_warm(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
         # Lower layers must not change under a live overlay.
         raise WtError("worktrees are mounted; remove them before warming the base")
     timings: Timings = []
-    run_warm_commands(repo, timings)
-    return {"base_bytes": du_bytes(repo.base), "timings": timings}
+    warm_seconds = run_warm_commands(repo, timings)
+    return {"base_stats": asdict(record_base_stats(repo, warm_seconds)), "timings": timings}
 
 
 def cmd_base_remove(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
@@ -682,7 +971,10 @@ def cmd_remove(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
 def cmd_list(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     require_environment()
     heal_mounts(repo)
-    return {"repo": str(repo.root), "worktrees": [worktree_status(repo, n) for n in worktree_names_from_state(repo.state)]}
+    names = worktree_names_from_state(repo.state)
+    label = "checking identical files" if args.waste else "measuring" if args.size else "checking"
+    rows = run_parallel(label, {n: lambda n=n: worktree_status(repo, n, args.size, args.waste) for n in names})
+    return {"repo": str(repo.root), "worktrees": [rows[n] for n in names]}
 
 
 def cmd_up(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
@@ -693,18 +985,32 @@ def cmd_up(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
 def cmd_status(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     require_environment()
     heal_mounts(repo)
-    base = None
+    names = worktree_names_from_state(repo.state) if has_base(repo) else []
+    jobs: dict[str, Callable[[], object]] = {f"cache:{p}": lambda p=p: du_bytes(p) for p in repo.cache_paths}
     if has_base(repo):
-        commit, age = base_head(repo)
-        base = {"path": str(repo.base), "commit": commit, "age": human_age(age), "bytes": du_bytes(repo.base)}
+        jobs["base"] = lambda: current_base_stats(repo)
+        jobs.update({f"upper:{n}": lambda n=n: measure_upper(repo, n, check_identical=False) for n in names})
+    measured = run_parallel("measuring disk usage", jobs)
+
+    base = None
+    worktrees: list[dict[str, object]] = []
+    savings = None
+    if has_base(repo):
+        stats = measured["base"]
+        _, age = base_head(repo)
+        base = {"path": str(repo.base), "age": human_age(age), **asdict(stats)}
+        uppers = {n: measured[f"upper:{n}"] for n in names}
+        worktrees = [worktree_usage_row(n, stats.unique_bytes, u) for n, u in uppers.items()]
+        savings = estimate_savings(stats.unique_bytes, list(uppers.values())) if uppers else None
     return {
         "repo": str(repo.root),
         "base_ref": repo.base_ref,
         "warm": repo.warm,
         "disk_free_bytes": shutil.disk_usage(repo.root).free,
-        "caches": [{"path": str(p), "bytes": du_bytes(p)} for p in repo.cache_paths],
-        "worktrees": len(worktree_names_from_state(repo.state)),
+        "caches": [{"path": str(p), "bytes": measured[f"cache:{p}"]} for p in repo.cache_paths],
         "base": base,
+        "worktrees": worktrees,
+        "savings": savings,
     }
 
 
@@ -743,7 +1049,7 @@ def cmd_update(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
         if new_base != old_base:
             with timed(f"base checkout {new_base[:11]}", timings):
                 git(["checkout", "-q", "--detach", new_base], repo.base)
-        run_warm_commands(repo, timings)
+        warm_seconds = run_warm_commands(repo, timings)
     finally:
         # Whatever happened to the base, give the worktrees back.
         for name in names:
@@ -767,6 +1073,8 @@ def cmd_update(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
                     results[name] = merge_base_into_branch(repo, mnt, branch, base_now)
             except WtError as e:
                 results[name] = f"FAILED: {e}"
+    with timed("measure base", timings):
+        record_base_stats(repo, warm_seconds)
     return {
         "base": {"old": old_base, "new": base_now or base_commit(repo)},
         "worktrees": [{"name": n, "branch": heads[n][0], "result": results[n]} for n in names],
@@ -884,13 +1192,17 @@ THIS REPO
   wt config       prints current config for this repo
 
 COORDINATOR PATTERN
-  wt status                    base present? age warning past 24h means run `wt update`
+  wt status                    base present? age warning past 24h means run `wt update`.
+                               Also measures each worktree's disk use against a full
+                               checkout and estimates the saving over `git worktree add`.
   wt create <branch>           checks the branch out if it exists, else creates it at the
                                base commit (--from <ref> for another start point);
                                prints {wt_dir}/<branch>. Name it per your team's convention.
   -> dispatch a sub-agent WITHOUT worktree isolation; put the path in its prompt
      and include the sub-agent rules below
   wt list                      one line per worktree with busy / dirty flags
+                               (--size adds disk use; --waste adds bytes copied up
+                               unchanged from the base, which only cost disk)
   wt remove <branch>           when the worktree is done; refuses if busy or dirty
                                (--force discards uncommitted changes; the branch survives)
   A worktree with uncommitted changes blocks `wt remove` and `wt update` until the
@@ -921,7 +1233,8 @@ KEEPING CURRENT
 SETUP FOR A NEW REPO
   wt config add warm '<command run in the base after checkout>'   (repeatable)
   wt config set baseRef origin/<branch>        (default: origin's HEAD)
-  wt config add cachePath <path>               (sizes shown by `wt status`)
+  wt config add cachePath <path>               (sizes shown by `wt status`, e.g. a
+                                               package store the base hardlinks from)
   wt config set stateDir <dir>                 only if the repo sits on an overlay
                                                filesystem (e.g. a container's /home)
   wt base-init                 then `wt config` to review; `wt config unset <key>` to remove
@@ -937,6 +1250,53 @@ OUTPUT
 
 def timing_lines(timings: Timings) -> list[str]:
     return [f"{t['step']}: {t['seconds']}s" for t in timings]
+
+
+def base_size_text(stats: dict[str, object]) -> str:
+    text = f"{human_bytes(stats['unique_bytes'])} on disk"
+    if stats["shared_bytes"]:
+        text += f", plus {human_bytes(stats['shared_bytes'])} hardlinked from a package store"
+    return text
+
+
+def render_status(result: dict[str, object]) -> str:
+    base = result["base"]
+    lines = [f"repo:        {result['repo']}  (base tracks {result['base_ref']})"]
+    if not base:
+        lines.append("base:        none (run `wt base-init`)")
+    else:
+        lines.append(f"base:        {base['path']} @ {base['commit'][:11]} ({base['age']} old)")
+        lines.append(f"base size:   {base_size_text(base)}")
+        if not result["warm"]:
+            lines.append("warm:        none configured")
+        elif base["warm_seconds"] is None:
+            lines.append("warm:        not timed yet (recorded by the next `wt base-warm` or `wt update`)")
+        else:
+            lines.append(f"warm:        {human_age(base['warm_seconds'])} per run, which each `wt create` skips")
+        rows = result["worktrees"]
+        lines.append(f"worktrees:   {len(rows)}")
+        for r in rows:
+            warning = f"  OVER {CHECKOUT_FRACTION_WARNING:.0%}" if r["over_warning"] else ""
+            lines.append(
+                f"  {r['name']:<45} {human_bytes(r['disk_bytes']):>7}  {r['checkout_fraction']:>4.0%} of a checkout"
+                f"  saves {human_bytes(r['saved_bytes'])}{warning}"
+            )
+        if any(r["over_warning"] for r in rows):
+            lines.append(
+                f"  over {CHECKOUT_FRACTION_WARNING:.0%}: the worktree rebuilt or reinstalled much of what the base has;"
+                " `wt list --waste` shows unchanged copies, and a stale base (`wt update`) causes rebuilds"
+            )
+        savings = result["savings"]
+        if savings:
+            saved = savings["saved_bytes"]
+            verdict = f"~{human_bytes(saved)} saved" if saved >= 0 else f"~{human_bytes(-saved)} more"
+            lines.append(
+                f"savings:     {verdict} vs `git worktree add` (wt uses {human_bytes(savings['wt_bytes'])},"
+                f" plain checkouts ~{human_bytes(savings['git_bytes'])})"
+            )
+    lines += [f"cache:       {c['path']} {human_bytes(c['bytes'])}" for c in result["caches"]]
+    lines.append(f"disk free:   {human_bytes(result['disk_free_bytes'])}")
+    return "\n".join(lines)
 
 
 def render(command: str, result: dict[str, object]) -> str:
@@ -955,7 +1315,10 @@ def render(command: str, result: dict[str, object]) -> str:
                 flags.append("busy")
             if r.get("dirty_files"):
                 flags.append(f"dirty({r['dirty_files']})")
-            lines.append(f"{r['name']:<40} {r.get('branch', '-'):<40} {human_bytes(r['upper_bytes']):>8}  {' '.join(flags)}")
+            sizes = f" {human_bytes(r['disk_bytes']):>8}" if "disk_bytes" in r else ""
+            if "identical_bytes" in r:
+                sizes += f"  ({human_bytes(r['identical_bytes'])} identical to base)"
+            lines.append(f"{r['name']:<40} {r.get('branch', '-'):<40}{sizes}  {' '.join(flags)}".rstrip())
         return "\n".join(lines)
     if command in ("create", "demote"):
         verb = "new branch" if result["created_branch"] else "existing branch"
@@ -968,22 +1331,10 @@ def render(command: str, result: dict[str, object]) -> str:
     if command == "up":
         return f"remounted: {', '.join(result['remounted']) or 'nothing to do'}"
     if command == "status":
-        base = result["base"]
-        lines = [
-            f"repo:        {result['repo']}  (base tracks {result['base_ref']})",
-            (
-                f"base:        {base['path']} @ {base['commit'][:11]} ({base['age']} old, {human_bytes(base['bytes'])})"
-                if base
-                else "base:        none (run `wt base-init`)"
-            ),
-            f"worktrees:   {result['worktrees']}",
-        ]
-        lines += [f"cache:       {c['path']} {human_bytes(c['bytes'])}" for c in result["caches"]]
-        lines.append(f"disk free:   {human_bytes(result['disk_free_bytes'])}")
-        return "\n".join(lines)
+        return render_status(result)
     if command in ("base-init", "base-warm"):
         lines = timing_lines(result["timings"])
-        lines.append(f"base size: {human_bytes(result['base_bytes'])}")
+        lines.append(f"base size: {base_size_text(result['base_stats'])}")
         return "\n".join(lines)
     if command == "update":
         b = result["base"]
@@ -1035,8 +1386,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_remove)
 
     s = sub.add_parser("list", help="list this repo's worktrees")
+    s.add_argument("--size", action="store_true", help="add each worktree's own disk use (slower)")
+    s.add_argument(
+        "--waste", action="store_true", help="also measure files copied up unchanged from the base (slowest; implies --size)"
+    )
     s.set_defaults(fn=cmd_list)
-    s = sub.add_parser("status", help="base, caches, disk")
+    s = sub.add_parser("status", help="base, worktree disk use and savings over plain git worktrees, caches, disk")
     s.set_defaults(fn=cmd_status)
     s = sub.add_parser(
         "config",
@@ -1070,6 +1425,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str]) -> int:
+    if argv[:1] == [MEASURE_UPPER_COMMAND]:
+        upper, base, *flags = argv[1:]
+        print(json.dumps(asdict(measure_upper_here(Path(upper), Path(base), "--identical" in flags))))
+        return 0
     args = build_parser().parse_args(argv)
     try:
         start = (args.repo or Path.cwd()).resolve()
