@@ -319,15 +319,6 @@ def estimate_savings(base_unique: int, uppers: list[UpperUsage]) -> dict[str, in
     return {"wt_bytes": wt_bytes, "git_bytes": git_bytes, "saved_bytes": git_bytes - wt_bytes}
 
 
-def worktree_usage_row(name: str, base_unique: int, upper: UpperUsage) -> dict[str, object]:
-    return {
-        "name": name,
-        "disk_bytes": upper.unique_bytes,
-        "shared_bytes": upper.shared_bytes,
-        "shadowed_bytes": upper.shadowed_bytes,
-        "saved_bytes": base_unique - upper.shadowed_bytes,
-        "checkout_fraction": round(upper.unique_bytes / base_unique, 3) if base_unique else 0.0,
-    }
 
 
 # ------------------------------------------------------------------------ effects
@@ -988,15 +979,13 @@ def cmd_status(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     measured = run_parallel("measuring disk usage", jobs)
 
     base = None
-    worktrees: list[dict[str, object]] = []
     savings = None
     if has_base(repo):
         stats = measured["base"]
         _, age = base_head(repo)
         base = {"path": str(repo.base), "age": human_age(age), **asdict(stats)}
-        uppers = {n: measured[f"upper:{n}"] for n in names}
-        worktrees = [worktree_usage_row(n, stats.unique_bytes, u) for n, u in uppers.items()]
-        savings = estimate_savings(stats.unique_bytes, list(uppers.values())) if uppers else None
+        uppers = [measured[f"upper:{n}"] for n in names]
+        savings = estimate_savings(stats.unique_bytes, uppers) if uppers else None
     return {
         "repo": str(repo.root),
         "base_ref": repo.base_ref,
@@ -1004,7 +993,7 @@ def cmd_status(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
         "disk_free_bytes": shutil.disk_usage(repo.root).free,
         "caches": [{"path": str(p), "bytes": measured[f"cache:{p}"]} for p in repo.cache_paths],
         "base": base,
-        "worktrees": worktrees,
+        "worktrees": len(names),
         "savings": savings,
     }
 
@@ -1188,8 +1177,7 @@ THIS REPO
 
 COORDINATOR PATTERN
   wt status                    base present? age warning past 24h means run `wt update`.
-                               Also measures each worktree's disk use against a full
-                               checkout and estimates the saving over `git worktree add`.
+                               Also estimates the disk saved over `git worktree add`.
   wt create <branch>           checks the branch out if it exists, else creates it at the
                                base commit (--from <ref> for another start point);
                                prints {wt_dir}/<branch>. Name it per your team's convention.
@@ -1268,13 +1256,7 @@ def render_status(result: dict[str, object]) -> str:
             lines.append("warm:        not timed yet (recorded by the next `wt base-warm` or `wt update`)")
         else:
             lines.append(f"warm:        {human_age(base['warm_seconds'])} per run, which each `wt create` skips")
-        rows = result["worktrees"]
-        lines.append(f"worktrees:   {len(rows)}")
-        for r in rows:
-            lines.append(
-                f"  {r['name']:<45} {human_bytes(r['disk_bytes']):>7}  {r['checkout_fraction']:>4.0%} of a checkout"
-                f"  saves {human_bytes(r['saved_bytes'])}"
-            )
+        lines.append(f"worktrees:   {result['worktrees']}")
         savings = result["savings"]
         if savings:
             saved = savings["saved_bytes"]

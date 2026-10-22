@@ -169,12 +169,6 @@ class DiskAccounting(unittest.TestCase):
             {"wt_bytes": 140, "git_bytes": (100 - 4 + 10) + (100 - 20 + 30), "saved_bytes": 76},
         )
 
-    def test_usage_row_against_a_checkout(self):
-        row = wt.worktree_usage_row("b", 100, wt.UpperUsage(51, 0, 30, None))
-        self.assertEqual(row["checkout_fraction"], 0.51)
-        self.assertEqual(row["saved_bytes"], 70)
-        self.assertEqual(wt.worktree_usage_row("a", 0, wt.UpperUsage(5, 0, 0, None))["checkout_fraction"], 0.0)
-
     def test_base_stats_round_trip_and_garbage(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = wt.Repo(root=Path(tmp) / "r", base_ref="origin/main")
@@ -244,10 +238,7 @@ class Formatting(unittest.TestCase):
                 "shared_bytes": 6 * 1024**3,
                 "warm_seconds": 840.0,
             },
-            "worktrees": [
-                wt.worktree_usage_row("small", 3 * 1024**3, wt.UpperUsage(1024**3, 0, 0, None)),
-                wt.worktree_usage_row("big", 3 * 1024**3, wt.UpperUsage(2 * 1024**3, 0, 1024**3, None)),
-            ],
+            "worktrees": 2,
             "savings": {"wt_bytes": 6 * 1024**3, "git_bytes": 8 * 1024**3, "saved_bytes": 2 * 1024**3},
         }
         result.update(overrides)
@@ -257,16 +248,14 @@ class Formatting(unittest.TestCase):
         out = wt.render("status", self.status_result())
         self.assertIn("3.0G on disk, plus 6.0G hardlinked", out)
         self.assertIn("14m per run", out)
-        self.assertIn("33% of a checkout  saves 3.0G", out)
-        self.assertIn("67% of a checkout  saves 2.0G", out)
-        self.assertIn("~2.0G saved vs `git worktree add`", out)
+        self.assertIn("worktrees:   2\nsavings:     ~2.0G saved vs `git worktree add`", out)
         self.assertIn("cache:       /store 5.0G", out)
 
     def test_render_status_untimed_warm_and_net_cost(self):
         out = wt.render(
             "status",
             self.status_result(
-                worktrees=[], savings={"wt_bytes": 4 * 1024**3, "git_bytes": 3 * 1024**3, "saved_bytes": -(1024**3)}
+                worktrees=0, savings={"wt_bytes": 4 * 1024**3, "git_bytes": 3 * 1024**3, "saved_bytes": -(1024**3)}
             )
             | {"base": {**self.status_result()["base"], "warm_seconds": None}},
         )
@@ -274,7 +263,7 @@ class Formatting(unittest.TestCase):
         self.assertIn("~1.0G more vs", out)
 
     def test_render_status_without_base(self):
-        out = wt.render("status", self.status_result(base=None, worktrees=[], savings=None, caches=[]))
+        out = wt.render("status", self.status_result(base=None, worktrees=0, savings=None, caches=[]))
         self.assertIn("none (run `wt base-init`)", out)
         self.assertIn("disk free", out)
 
