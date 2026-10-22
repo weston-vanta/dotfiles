@@ -169,11 +169,11 @@ class DiskAccounting(unittest.TestCase):
             {"wt_bytes": 140, "git_bytes": (100 - 4 + 10) + (100 - 20 + 30), "saved_bytes": 76},
         )
 
-    def test_usage_row_warns_past_half_a_checkout(self):
-        self.assertFalse(wt.worktree_usage_row("a", 100, wt.UpperUsage(50, 0, 0, None))["over_warning"])
+    def test_usage_row_against_a_checkout(self):
         row = wt.worktree_usage_row("b", 100, wt.UpperUsage(51, 0, 30, None))
-        self.assertTrue(row["over_warning"])
+        self.assertEqual(row["checkout_fraction"], 0.51)
         self.assertEqual(row["saved_bytes"], 70)
+        self.assertEqual(wt.worktree_usage_row("a", 0, wt.UpperUsage(5, 0, 0, None))["checkout_fraction"], 0.0)
 
     def test_base_stats_round_trip_and_garbage(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -253,13 +253,12 @@ class Formatting(unittest.TestCase):
         result.update(overrides)
         return result
 
-    def test_render_status_savings_and_warning(self):
+    def test_render_status_savings(self):
         out = wt.render("status", self.status_result())
         self.assertIn("3.0G on disk, plus 6.0G hardlinked", out)
         self.assertIn("14m per run", out)
-        self.assertIn("33% of a checkout", out)
-        self.assertEqual(out.count("OVER 50%"), 1)
-        self.assertIn("wt list --waste", out)
+        self.assertIn("33% of a checkout  saves 3.0G", out)
+        self.assertIn("67% of a checkout  saves 2.0G", out)
         self.assertIn("~2.0G saved vs `git worktree add`", out)
         self.assertIn("cache:       /store 5.0G", out)
 
@@ -273,7 +272,6 @@ class Formatting(unittest.TestCase):
         )
         self.assertIn("not timed yet", out)
         self.assertIn("~1.0G more vs", out)
-        self.assertNotIn("OVER", out)
 
     def test_render_status_without_base(self):
         out = wt.render("status", self.status_result(base=None, worktrees=[], savings=None, caches=[]))

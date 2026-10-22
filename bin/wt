@@ -46,9 +46,6 @@ from typing import TypeVar
 
 STALE_BASE_SECONDS = 24 * 3600
 REMOTE = "origin"
-# A worktree's own files past this share of a full checkout usually mean it rebuilt
-# or reinstalled what the base already has.
-CHECKOUT_FRACTION_WARNING = 0.5
 # find -printf formats: type, link count, 512-byte blocks, [size, path relative to the start dir].
 FIND_USAGE_FORMAT = r"%y %n %b\n"
 FIND_ENTRY_FORMAT = r"%y %n %b %s %P\0"
@@ -323,15 +320,13 @@ def estimate_savings(base_unique: int, uppers: list[UpperUsage]) -> dict[str, in
 
 
 def worktree_usage_row(name: str, base_unique: int, upper: UpperUsage) -> dict[str, object]:
-    fraction = upper.unique_bytes / base_unique if base_unique else 0.0
     return {
         "name": name,
         "disk_bytes": upper.unique_bytes,
         "shared_bytes": upper.shared_bytes,
         "shadowed_bytes": upper.shadowed_bytes,
         "saved_bytes": base_unique - upper.shadowed_bytes,
-        "checkout_fraction": round(fraction, 3),
-        "over_warning": fraction > CHECKOUT_FRACTION_WARNING,
+        "checkout_fraction": round(upper.unique_bytes / base_unique, 3) if base_unique else 0.0,
     }
 
 
@@ -1276,15 +1271,9 @@ def render_status(result: dict[str, object]) -> str:
         rows = result["worktrees"]
         lines.append(f"worktrees:   {len(rows)}")
         for r in rows:
-            warning = f"  OVER {CHECKOUT_FRACTION_WARNING:.0%}" if r["over_warning"] else ""
             lines.append(
                 f"  {r['name']:<45} {human_bytes(r['disk_bytes']):>7}  {r['checkout_fraction']:>4.0%} of a checkout"
-                f"  saves {human_bytes(r['saved_bytes'])}{warning}"
-            )
-        if any(r["over_warning"] for r in rows):
-            lines.append(
-                f"  over {CHECKOUT_FRACTION_WARNING:.0%}: the worktree rebuilt or reinstalled much of what the base has;"
-                " `wt list --waste` shows unchanged copies, and a stale base (`wt update`) causes rebuilds"
+                f"  saves {human_bytes(r['saved_bytes'])}"
             )
         savings = result["savings"]
         if savings:
