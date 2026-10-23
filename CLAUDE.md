@@ -18,7 +18,7 @@ The bootstrap script symlinks everything from this repo into `$HOME`:
 - `agents/AGENTS.md` → `~/.claude/CLAUDE.md`, `agents/claude/settings.json` → `~/.claude/settings.json` (individual files, not the whole directory, since `~/.claude/` holds transient data)
 - `.gitconfig`, `.oh-my-zsh`, `.zshrc` → `~/`
 
-It then runs `install-scripts/*.zsh`, which install Neovim and flow.
+It then runs `install-scripts/*.zsh`, which install Neovim, herdr, googleworkspace-cli (`gws`), and flow.
 
 On cloud dev environments with a shared network mount at `$EFS_MOUNT_POINT`, `post-start-install.sh` runs after the mount is set up. It replaces the paths listed at the top of the script with symlinks into the mount so they persist across environments, then re-links the agent config into the shared `~/.claude`. Only paths belong in this repo, never the mount's contents.
 
