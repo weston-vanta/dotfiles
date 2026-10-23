@@ -192,6 +192,11 @@ def human_bytes(n: int) -> str:
     return f"{size:.1f}T"
 
 
+def newest_mtime(find_output: str) -> float | None:
+    """Latest timestamp from `find -printf '%T@\\n'` output."""
+    return max((float(t) for t in find_output.split()), default=None)
+
+
 def progress_line(label: str, done: int, total: int, elapsed: float) -> str:
     return f"wt: {label} {done}/{total} ({elapsed:.0f}s)"
 
@@ -509,7 +514,7 @@ def run_parallel(label: str, jobs: dict[str, Callable[[], T]]) -> dict[str, T]:
     if not jobs:
         return {}
     results: dict[str, T] = {}
-    with Progress(label, len(jobs)) as progress, ThreadPoolExecutor(max_workers=min(len(jobs), 8)) as pool:
+    with Progress(label, len(jobs)) as progress, ThreadPoolExecutor(max_workers=min(len(jobs), os.cpu_count() or 8)) as pool:
         futures = {pool.submit(fn): key for key, fn in jobs.items()}
         for future in as_completed(futures):
             results[futures[future]] = future.result()
@@ -771,6 +776,22 @@ def destroy(repo: Repo, name: str) -> None:
     git(["worktree", "prune"], repo.root)
 
 
+def last_write(repo: Repo, name: str, mounted: bool) -> float | None:
+    """When anything last wrote to the worktree: its own files, or its git index, HEAD, or reflog.
+
+    Reads leave no trace, so an agent that is only reading shows its last write.
+    """
+    upper = repo.upper_dir(name)
+    times = [newest_mtime(sudo(["find", str(upper), "-printf", r"%T@\n"]).stdout)] if upper.exists() else []
+    pointer = repo.mount_point(name) / ".git"
+    if mounted and pointer.is_file():
+        gitdir = Path(pointer.read_text().strip().removeprefix("gitdir: "))
+        for path in (gitdir / "index", gitdir / "HEAD", gitdir / "logs" / "HEAD"):
+            with contextlib.suppress(OSError):
+                times.append(path.stat().st_mtime)
+    return max((t for t in times if t is not None), default=None)
+
+
 def worktree_status(repo: Repo, name: str, size: bool = False, identical: bool = False) -> dict[str, object]:
     mnt = repo.mount_point(name)
     mounted = is_mounted(repo, name)
@@ -958,9 +979,17 @@ def cmd_list(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     require_environment()
     heal_mounts(repo)
     names = worktree_names_from_state(repo.state)
+    mounted = overlay_mounts()
     label = "checking identical files" if args.waste else "measuring" if args.size else "checking"
-    rows = run_parallel(label, {n: lambda n=n: worktree_status(repo, n, args.size, args.waste) for n in names})
-    return {"repo": str(repo.root), "worktrees": [rows[n] for n in names]}
+    # Status and last write are separate jobs so each worktree's git status and file walk overlap.
+    jobs: dict[str, Callable[[], object]] = {f"status:{n}": lambda n=n: worktree_status(repo, n, args.size, args.waste) for n in names}
+    jobs.update({f"write:{n}": lambda n=n: last_write(repo, n, repo.mount_point(n) in mounted) for n in names})
+    results = run_parallel(label, jobs)
+    rows = []
+    for n in names:
+        written = results[f"write:{n}"]
+        rows.append({**results[f"status:{n}"], "last_write": round(written) if written is not None else None})
+    return {"repo": str(repo.root), "worktrees": rows}
 
 
 def cmd_up(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
@@ -1184,6 +1213,8 @@ COORDINATOR PATTERN
   -> dispatch a sub-agent WITHOUT worktree isolation; put the path in its prompt
      and include the sub-agent rules below
   wt list                      one line per worktree: clean or dirty(N), idle or busy,
+                               when it was last written to (busy only catches running
+                               commands; a recent write suggests an agent is at work),
                                and its branch when it isn't the worktree's name
                                (--size adds disk use; --waste adds bytes copied up
                                unchanged from the base, which only cost disk)
@@ -1236,8 +1267,8 @@ def timing_lines(timings: Timings) -> list[str]:
     return [f"{t['step']}: {t['seconds']}s" for t in timings]
 
 
-def list_cells(r: dict[str, object]) -> list[str]:
-    """Name, optional size, state, and notes; the branch shows only when it isn't the name."""
+def list_cells(r: dict[str, object], now: float) -> list[str]:
+    """Name, optional size, state, last write, and notes; the branch shows only when it isn't the name."""
     cells = [str(r["name"])]
     if "disk_bytes" in r:
         cells.append(human_bytes(r["disk_bytes"]))
@@ -1246,6 +1277,8 @@ def list_cells(r: dict[str, object]) -> list[str]:
         cells.append(f"{f'dirty({dirty_files})' if dirty_files else 'clean'}, {'busy' if r['busy'] else 'idle'}")
     else:
         cells.append("UNMOUNTED")
+    written = r.get("last_write")
+    cells.append(f"wrote {human_age(max(0.0, now - written))} ago" if written is not None else "never written")
     notes = []
     if "identical_bytes" in r:
         notes.append(f"({human_bytes(r['identical_bytes'])} identical to base)")
@@ -1255,10 +1288,11 @@ def list_cells(r: dict[str, object]) -> list[str]:
     return cells
 
 
-def render_list(rows: list[dict[str, object]]) -> str:
+def render_list(rows: list[dict[str, object]], now: float | None = None) -> str:
     if not rows:
         return "no worktrees"
-    table = [list_cells(r) for r in rows]
+    now = time.time() if now is None else now
+    table = [list_cells(r, now) for r in rows]
     widths = [max(len(row[i]) for row in table) for i in range(len(table[0]))]
     size_column = 1 if "disk_bytes" in rows[0] else None
     return "\n".join(

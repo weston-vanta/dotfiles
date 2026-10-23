@@ -201,39 +201,46 @@ class Formatting(unittest.TestCase):
         self.assertEqual(wt.human_bytes(2048), "2K")
         self.assertEqual(wt.human_bytes(5 * 1024**3), "5.0G")
 
-    def test_render_list_states_and_branch_only_when_different(self):
-        out = wt.render(
-            "list",
-            {
-                "repo": "/r",
-                "worktrees": [
-                    {"name": "a", "path": "/r.wt/a", "mounted": True, "branch": "a", "dirty_files": 2, "busy": True},
-                    {"name": "long/name", "path": "/r.wt/long/name", "mounted": True, "branch": "other", "dirty_files": 0, "busy": False},
-                    {"name": "b", "path": "/r.wt/b", "mounted": False},
-                ],
-            },
+    def test_render_list_states_last_write_and_branch_only_when_different(self):
+        now = 100_000.0
+        out = wt.render_list(
+            [
+                {"name": "a", "mounted": True, "branch": "a", "dirty_files": 2, "busy": True, "last_write": now - 42},
+                {"name": "long/name", "mounted": True, "branch": "other", "dirty_files": 0, "busy": False, "last_write": now - 7200},
+                {"name": "b", "mounted": False, "last_write": None},
+            ],
+            now,
         )
         self.assertEqual(
             out.splitlines(),
-            ["a          dirty(2), busy", "long/name  clean, idle     on other", "b          UNMOUNTED"],
+            [
+                "a          dirty(2), busy  wrote 42s ago",
+                "long/name  clean, idle     wrote 2.0h ago  on other",
+                "b          UNMOUNTED       never written",
+            ],
         )
 
     def test_render_list_sizes(self):
-        row = {"name": "a", "path": "/r.wt/a", "mounted": True, "branch": "a", "dirty_files": 0, "busy": False}
-        out = wt.render(
-            "list",
-            {
-                "repo": "/r",
-                "worktrees": [
-                    {**row, "disk_bytes": 2 * 1024**3, "identical_bytes": 512 * 1024**2},
-                    {**row, "name": "b", "branch": "b", "disk_bytes": 12 * 1024**2, "identical_bytes": 0},
-                ],
-            },
+        now = 100_000.0
+        row = {"name": "a", "mounted": True, "branch": "a", "dirty_files": 0, "busy": False, "last_write": now - 180}
+        out = wt.render_list(
+            [
+                {**row, "disk_bytes": 2 * 1024**3, "identical_bytes": 512 * 1024**2},
+                {**row, "name": "b", "branch": "b", "disk_bytes": 12 * 1024**2, "identical_bytes": 0},
+            ],
+            now,
         )
         self.assertEqual(
             out.splitlines(),
-            ["a   2.0G  clean, idle  (512.0M identical to base)", "b  12.0M  clean, idle  (0B identical to base)"],
+            [
+                "a   2.0G  clean, idle  wrote 3m ago  (512.0M identical to base)",
+                "b  12.0M  clean, idle  wrote 3m ago  (0B identical to base)",
+            ],
         )
+
+    def test_newest_mtime(self):
+        self.assertEqual(wt.newest_mtime("1700000000.5\n1700000100.25\n1600000000.0\n"), 1700000100.25)
+        self.assertIsNone(wt.newest_mtime(""))
 
     def status_result(self, **overrides):
         result = {
