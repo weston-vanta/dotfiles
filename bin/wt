@@ -257,7 +257,7 @@ class UpperUsage:
     # Base bytes this layer replaces or deletes: a plain checkout frees them, an overlay keeps both.
     shadowed_bytes: int
     # Copied-up files byte-identical to the base; None when not checked.
-    identical_bytes: int | None
+    duplicated_bytes: int | None
     # Latest modification time of anything in the layer; None when it is empty.
     newest_mtime: float | None = None
 
@@ -302,7 +302,7 @@ def summarize_upper(
 
     A whiteout over a whole base directory counts only the directory entry, not its contents.
     """
-    unique = shared = shadowed = identical = 0
+    unique = shared = shadowed = duplicated = 0
     newest: float | None = None
     for e in entries:
         newest = e.mtime if newest is None else max(newest, e.mtime)
@@ -325,8 +325,8 @@ def summarize_upper(
             and e.size == lower.size
             and same_content(e.path)
         ):
-            identical += e.disk_bytes
-    return UpperUsage(unique, shared, shadowed, identical if same_content is not None else None, newest)
+            duplicated += e.disk_bytes
+    return UpperUsage(unique, shared, shadowed, duplicated if same_content is not None else None, newest)
 
 
 def estimate_savings(base_unique: int, uppers: list[UpperUsage]) -> dict[str, int]:
@@ -558,22 +558,22 @@ def lower_file(path: str) -> LowerFile | None:
     )
 
 
-def measure_upper_here(upper: Path, base: Path, check_identical: bool) -> UpperUsage:
+def measure_upper_here(upper: Path, base: Path, check_duplicated: bool) -> UpperUsage:
     """MEASURE_UPPER_COMMAND's work, run as root so every copied-up file is readable."""
     entries = parse_find_entries(run(["find", str(upper), "-printf", FIND_ENTRY_FORMAT]).stdout)
     # String paths: pathlib joins cost several times the lstat across hundreds of thousands of files.
     upper_prefix, base_prefix = f"{upper}/", f"{base}/"
-    compare = (lambda rel: filecmp.cmp(upper_prefix + rel, base_prefix + rel, shallow=False)) if check_identical else None
+    compare = (lambda rel: filecmp.cmp(upper_prefix + rel, base_prefix + rel, shallow=False)) if check_duplicated else None
     return summarize_upper(entries, lambda rel: lower_file(base_prefix + rel), compare)
 
 
-def measure_upper(repo: Repo, name: str, check_identical: bool) -> UpperUsage:
+def measure_upper(repo: Repo, name: str, check_duplicated: bool) -> UpperUsage:
     """Measure in a separate process: the per-file work is CPU-bound, and threads share one GIL."""
     upper = repo.upper_dir(name)
     if not upper.exists():
-        return UpperUsage(0, 0, 0, 0 if check_identical else None)
+        return UpperUsage(0, 0, 0, 0 if check_duplicated else None)
     cmd = [sys.executable, str(Path(__file__).resolve()), MEASURE_UPPER_COMMAND, str(upper), str(repo.base)]
-    out = sudo([*cmd, *(["--identical"] if check_identical else [])]).stdout
+    out = sudo([*cmd, *(["--duplicated"] if check_duplicated else [])]).stdout
     return UpperUsage(**json.loads(out))
 
 
@@ -1017,7 +1017,7 @@ def cmd_list(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
         jobs: dict[str, Callable[[], object]] = {
             f"checks:{n}": lambda n=n: worktree_checks(repo, n) for n in names if rows[n]["mounted"]
         }
-        jobs.update({f"upper:{n}": lambda n=n: measure_upper(repo, n, check_identical=True) for n in names})
+        jobs.update({f"upper:{n}": lambda n=n: measure_upper(repo, n, check_duplicated=True) for n in names})
         results = run_parallel("measuring worktrees", jobs)
         for n in names:
             upper = results[f"upper:{n}"]
@@ -1026,7 +1026,7 @@ def cmd_list(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
             rows[n].update(results.get(f"checks:{n}", {}))
             rows[n].update(
                 disk_bytes=upper.unique_bytes,
-                identical_bytes=upper.identical_bytes,
+                duplicated_bytes=upper.duplicated_bytes,
                 last_write=round(max(times)) if times else None,
             )
     return {"repo": str(repo.root), "full": args.full, "worktrees": [rows[n] for n in names]}
@@ -1044,7 +1044,7 @@ def cmd_status(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     jobs: dict[str, Callable[[], object]] = {f"cache:{p}": lambda p=p: du_bytes(p) for p in repo.cache_paths}
     if has_base(repo):
         jobs["base"] = lambda: current_base_stats(repo)
-        jobs.update({f"upper:{n}": lambda n=n: measure_upper(repo, n, check_identical=False) for n in names})
+        jobs.update({f"upper:{n}": lambda n=n: measure_upper(repo, n, check_duplicated=False) for n in names})
     measured = run_parallel("measuring disk usage", jobs)
 
     base = None
@@ -1330,7 +1330,7 @@ def render_list(result: dict[str, object], now: float | None = None) -> str:
     if not result.get("full"):
         return "\n".join(format_table([[r["name"], worktree_note(r)] for r in rows]))
     now = time.time() if now is None else now
-    table = [["NAME", "SIZE", "IDENTICAL", "CHANGES", "ACTIVITY", "LAST WRITE", ""]]
+    table = [["NAME", "SIZE", "DUPLICATED", "CHANGES", "ACTIVITY", "LAST WRITE", ""]]
     for r in rows:
         if r["mounted"]:
             changes = f"dirty({r['dirty_files']})" if r["dirty_files"] else "clean"
@@ -1342,14 +1342,14 @@ def render_list(result: dict[str, object], now: float | None = None) -> str:
             [
                 r["name"],
                 human_bytes(r["disk_bytes"]),
-                human_bytes(r["identical_bytes"]),
+                human_bytes(r["duplicated_bytes"]),
                 changes,
                 activity,
                 f"{human_age(max(0.0, now - written))} ago" if written is not None else "never",
                 worktree_note(r),
             ]
         )
-    totals = [sum(r[k] for r in rows) for k in ("disk_bytes", "identical_bytes")]
+    totals = [sum(r[k] for r in rows) for k in ("disk_bytes", "duplicated_bytes")]
     table.append(["total", *map(human_bytes, totals), "", "", "", ""])
     lines = format_table(table, right=frozenset({1, 2}))
     out = lines[:1]
@@ -1469,7 +1469,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--full",
         action="store_true",
-        help="report size, bytes identical to the base, changes, busy processes and last write (slow)",
+        help="report size, bytes duplicated from the base, changes, busy processes and last write (slow)",
     )
     s.set_defaults(fn=cmd_list)
     s = sub.add_parser("status", help="base, worktree disk use and savings over plain git worktrees, caches, disk")
@@ -1508,7 +1508,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str]) -> int:
     if argv[:1] == [MEASURE_UPPER_COMMAND]:
         upper, base, *flags = argv[1:]
-        print(json.dumps(asdict(measure_upper_here(Path(upper), Path(base), "--identical" in flags))))
+        print(json.dumps(asdict(measure_upper_here(Path(upper), Path(base), "--duplicated" in flags))))
         return 0
     args = build_parser().parse_args(argv)
     try:

@@ -147,9 +147,9 @@ class DiskAccounting(unittest.TestCase):
         self.assertEqual(usage.shared_bytes, 7000)
         # Only singly-linked base files are freed by replacing them; the store copy stays.
         self.assertEqual(usage.shadowed_bytes, 4000 + 500)
-        self.assertIsNone(usage.identical_bytes)
+        self.assertIsNone(usage.duplicated_bytes)
 
-    def test_identical_needs_same_size_and_content(self):
+    def test_duplicated_needs_same_size_and_content(self):
         base = {"same": lower(1, 4096, 10), "resized": lower(1, 4096, 10), "edited": lower(1, 4096, 10)}
         entries = [
             entry("f", 1, 4096, "same", 10),
@@ -164,7 +164,7 @@ class DiskAccounting(unittest.TestCase):
             return rel == "same"
 
         usage = wt.summarize_upper(entries, base.get, same)
-        self.assertEqual(usage.identical_bytes, 4096)
+        self.assertEqual(usage.duplicated_bytes, 4096)
         self.assertEqual(compared, ["same", "edited"])
 
     def test_savings_against_plain_checkouts(self):
@@ -226,7 +226,7 @@ class Formatting(unittest.TestCase):
         g = 1024**3
         full = {"dirty_files": 0, "busy": False, "busy_processes": []}
         rows = [
-            {"name": "a", "mounted": True, "branch": "a", **full, "disk_bytes": 2 * g, "identical_bytes": g // 2, "last_write": now - 42},
+            {"name": "a", "mounted": True, "branch": "a", **full, "disk_bytes": 2 * g, "duplicated_bytes": g // 2, "last_write": now - 42},
             {
                 "name": "long/name",
                 "mounted": True,
@@ -235,21 +235,21 @@ class Formatting(unittest.TestCase):
                 "busy": True,
                 "busy_processes": [{"pid": 41, "name": "node", "command": "node turbo typecheck"}],
                 "disk_bytes": g,
-                "identical_bytes": 0,
+                "duplicated_bytes": 0,
                 "last_write": now - 7200,
             },
-            {"name": "b", "mounted": False, "disk_bytes": 0, "identical_bytes": 0, "last_write": None},
+            {"name": "b", "mounted": False, "disk_bytes": 0, "duplicated_bytes": 0, "last_write": None},
         ]
         out = wt.render_list({"repo": "/r", "full": True, "worktrees": rows}, now)
         self.assertEqual(
             out.splitlines(),
             [
-                "NAME       SIZE  IDENTICAL  CHANGES   ACTIVITY  LAST WRITE",
-                "a          2.0G     512.0M  clean     idle      42s ago",
-                "long/name  1.0G         0B  dirty(3)  busy      2.0h ago    on other",
+                "NAME       SIZE  DUPLICATED  CHANGES   ACTIVITY  LAST WRITE",
+                "a          2.0G      512.0M  clean     idle      42s ago",
+                "long/name  1.0G          0B  dirty(3)  busy      2.0h ago    on other",
                 "    41 node: node turbo typecheck",
-                "b            0B         0B  -         -         never       UNMOUNTED",
-                "total      3.0G     512.0M",
+                "b            0B          0B  -         -         never       UNMOUNTED",
+                "total      3.0G      512.0M",
             ],
         )
 
