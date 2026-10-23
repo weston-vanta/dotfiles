@@ -46,9 +46,11 @@ from typing import TypeVar
 
 STALE_BASE_SECONDS = 24 * 3600
 REMOTE = "origin"
-# find -printf formats: type, link count, 512-byte blocks, [size, path relative to the start dir].
+# find -printf formats: type, link count, 512-byte blocks, [size, mtime, path relative to the start dir].
 FIND_USAGE_FORMAT = r"%y %n %b\n"
-FIND_ENTRY_FORMAT = r"%y %n %b %s %P\0"
+FIND_ENTRY_FORMAT = r"%y %n %b %s %T@ %P\0"
+# Longest command line shown for a process keeping a worktree busy.
+COMMAND_WIDTH = 100
 # Internal subcommand that measures one upper dir; kept out of argparse so it stays hidden.
 MEASURE_UPPER_COMMAND = "_measure-upper"
 
@@ -192,9 +194,18 @@ def human_bytes(n: int) -> str:
     return f"{size:.1f}T"
 
 
-def newest_mtime(find_output: str) -> float | None:
-    """Latest timestamp from `find -printf '%T@\\n'` output."""
-    return max((float(t) for t in find_output.split()), default=None)
+def branch_from_head(head: str) -> str:
+    """Branch name from a HEAD file's content, or detached@<short sha>."""
+    head = head.strip()
+    return head.removeprefix("ref: refs/heads/") if head.startswith("ref: refs/heads/") else f"detached@{head[:11]}"
+
+
+def describe_process(pid: int, name: str, cmdline: bytes) -> dict[str, object]:
+    """A process from its /proc comm and NUL-separated cmdline, with the command line shortened."""
+    command = " ".join(arg.decode(errors="replace") for arg in cmdline.split(b"\0") if arg) or f"[{name}]"
+    if len(command) > COMMAND_WIDTH:
+        command = command[: COMMAND_WIDTH - 1] + "…"
+    return {"pid": pid, "name": name, "command": command}
 
 
 def progress_line(label: str, done: int, total: int, elapsed: float) -> str:
@@ -220,6 +231,7 @@ class Entry:
     links: int
     disk_bytes: int
     size: int
+    mtime: float
     path: str
 
     @property
@@ -246,6 +258,8 @@ class UpperUsage:
     shadowed_bytes: int
     # Copied-up files byte-identical to the base; None when not checked.
     identical_bytes: int | None
+    # Latest modification time of anything in the layer; None when it is empty.
+    newest_mtime: float | None = None
 
 
 @dataclass(frozen=True)
@@ -274,8 +288,8 @@ def parse_find_entries(find_output: str) -> list[Entry]:
     entries: list[Entry] = []
     for record in find_output.split("\0"):
         if record:
-            kind, links, blocks, size, path = record.split(" ", 4)
-            entries.append(Entry(kind, int(links), int(blocks) * 512, int(size), path))
+            kind, links, blocks, size, mtime, path = record.split(" ", 5)
+            entries.append(Entry(kind, int(links), int(blocks) * 512, int(size), float(mtime), path))
     return entries
 
 
@@ -289,7 +303,9 @@ def summarize_upper(
     A whiteout over a whole base directory counts only the directory entry, not its contents.
     """
     unique = shared = shadowed = identical = 0
+    newest: float | None = None
     for e in entries:
+        newest = e.mtime if newest is None else max(newest, e.mtime)
         if e.shared:
             shared += e.disk_bytes
         else:
@@ -310,7 +326,7 @@ def summarize_upper(
             and same_content(e.path)
         ):
             identical += e.disk_bytes
-    return UpperUsage(unique, shared, shadowed, identical if same_content is not None else None)
+    return UpperUsage(unique, shared, shadowed, identical if same_content is not None else None, newest)
 
 
 def estimate_savings(base_unique: int, uppers: list[UpperUsage]) -> dict[str, int]:
@@ -776,36 +792,51 @@ def destroy(repo: Repo, name: str) -> None:
     git(["worktree", "prune"], repo.root)
 
 
-def last_write(repo: Repo, name: str, mounted: bool) -> float | None:
-    """When anything last wrote to the worktree: its own files, or its git index, HEAD, or reflog.
-
-    Reads leave no trace, so an agent that is only reading shows its last write.
-    """
-    upper = repo.upper_dir(name)
-    times = [newest_mtime(sudo(["find", str(upper), "-printf", r"%T@\n"]).stdout)] if upper.exists() else []
+def worktree_gitdir(repo: Repo, name: str) -> Path | None:
+    """The worktree's entry under <repo>/.git/worktrees/, from its mounted `.git` pointer."""
     pointer = repo.mount_point(name) / ".git"
-    if mounted and pointer.is_file():
-        gitdir = Path(pointer.read_text().strip().removeprefix("gitdir: "))
-        for path in (gitdir / "index", gitdir / "HEAD", gitdir / "logs" / "HEAD"):
-            with contextlib.suppress(OSError):
-                times.append(path.stat().st_mtime)
-    return max((t for t in times if t is not None), default=None)
+    try:
+        return Path(pointer.read_text().strip().removeprefix("gitdir: "))
+    except OSError:
+        return None
 
 
-def worktree_status(repo: Repo, name: str, size: bool = False, identical: bool = False) -> dict[str, object]:
+def git_write_time(gitdir: Path) -> float | None:
+    """Latest write to the worktree's git index, HEAD, or reflog, which live outside its files."""
+    times = []
+    for path in (gitdir / "index", gitdir / "HEAD", gitdir / "logs" / "HEAD"):
+        with contextlib.suppress(OSError):
+            times.append(path.stat().st_mtime)
+    return max(times, default=None)
+
+
+def worktree_summary(repo: Repo, name: str, mounts: set[Path]) -> dict[str, object]:
+    """Name, path, mount state and branch, read from files without running git."""
     mnt = repo.mount_point(name)
-    mounted = is_mounted(repo, name)
-    info: dict[str, object] = {"name": name, "path": str(mnt), "mounted": mounted}
-    if mounted:
-        info["branch"] = current_branch(mnt) or f"detached@{git(['rev-parse', '--short', 'HEAD'], mnt)}"
-        info["dirty_files"] = len(dirty(mnt).splitlines())
-        info["busy"] = bool(busy_pids(repo, name))
-    if size or identical:
-        usage = measure_upper(repo, name, check_identical=identical)
-        info["disk_bytes"] = usage.unique_bytes
-        if usage.identical_bytes is not None:
-            info["identical_bytes"] = usage.identical_bytes
+    info: dict[str, object] = {"name": name, "path": str(mnt), "mounted": mnt in mounts}
+    gitdir = worktree_gitdir(repo, name) if mnt in mounts else None
+    if gitdir is not None:
+        with contextlib.suppress(OSError):
+            info["branch"] = branch_from_head((gitdir / "HEAD").read_text())
     return info
+
+
+def process_details(pid: int) -> dict[str, object]:
+    proc = Path("/proc") / str(pid)
+    try:
+        return describe_process(pid, (proc / "comm").read_text().strip(), (proc / "cmdline").read_bytes())
+    except OSError:
+        return {"pid": pid, "name": "?", "command": "(exited)"}
+
+
+def worktree_checks(repo: Repo, name: str) -> dict[str, object]:
+    """Uncommitted changes and the processes keeping a mounted worktree busy."""
+    processes = [process_details(pid) for pid in busy_pids(repo, name)]
+    return {
+        "dirty_files": len(dirty(repo.mount_point(name)).splitlines()),
+        "busy": bool(processes),
+        "busy_processes": processes,
+    }
 
 
 # --------------------------------------------------------------------- warm / merge
@@ -957,7 +988,7 @@ def create_worktree(repo: Repo, name: str, start_ref: str | None) -> dict[str, o
     except Exception:
         destroy(repo, name)
         raise
-    info = worktree_status(repo, name)
+    info = worktree_summary(repo, name, overlay_mounts())
     info["create_seconds"] = round(time.monotonic() - start, 1)
     info["base_commit"] = commit
     info["created_branch"] = not branch_exists
@@ -979,17 +1010,26 @@ def cmd_list(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
     require_environment()
     heal_mounts(repo)
     names = worktree_names_from_state(repo.state)
-    mounted = overlay_mounts()
-    label = "checking identical files" if args.waste else "measuring" if args.size else "checking"
-    # Status and last write are separate jobs so each worktree's git status and file walk overlap.
-    jobs: dict[str, Callable[[], object]] = {f"status:{n}": lambda n=n: worktree_status(repo, n, args.size, args.waste) for n in names}
-    jobs.update({f"write:{n}": lambda n=n: last_write(repo, n, repo.mount_point(n) in mounted) for n in names})
-    results = run_parallel(label, jobs)
-    rows = []
-    for n in names:
-        written = results[f"write:{n}"]
-        rows.append({**results[f"status:{n}"], "last_write": round(written) if written is not None else None})
-    return {"repo": str(repo.root), "worktrees": rows}
+    mounts = overlay_mounts()
+    rows = {n: worktree_summary(repo, n, mounts) for n in names}
+    if args.full:
+        # Git checks and file walks are separate jobs so each worktree's two overlap.
+        jobs: dict[str, Callable[[], object]] = {
+            f"checks:{n}": lambda n=n: worktree_checks(repo, n) for n in names if rows[n]["mounted"]
+        }
+        jobs.update({f"upper:{n}": lambda n=n: measure_upper(repo, n, check_identical=True) for n in names})
+        results = run_parallel("measuring worktrees", jobs)
+        for n in names:
+            upper = results[f"upper:{n}"]
+            gitdir = worktree_gitdir(repo, n) if rows[n]["mounted"] else None
+            times = [t for t in (upper.newest_mtime, git_write_time(gitdir) if gitdir else None) if t is not None]
+            rows[n].update(results.get(f"checks:{n}", {}))
+            rows[n].update(
+                disk_bytes=upper.unique_bytes,
+                identical_bytes=upper.identical_bytes,
+                last_write=round(max(times)) if times else None,
+            )
+    return {"repo": str(repo.root), "full": args.full, "worktrees": [rows[n] for n in names]}
 
 
 def cmd_up(repo: Repo, args: argparse.Namespace) -> dict[str, object]:
@@ -1212,12 +1252,12 @@ COORDINATOR PATTERN
                                prints {wt_dir}/<branch>. Name it per your team's convention.
   -> dispatch a sub-agent WITHOUT worktree isolation; put the path in its prompt
      and include the sub-agent rules below
-  wt list                      one line per worktree: clean or dirty(N), idle or busy,
-                               when it was last written to (busy only catches running
-                               commands; a recent write suggests an agent is at work),
-                               and its branch when it isn't the worktree's name
-                               (--size adds disk use; --waste adds bytes copied up
-                               unchanged from the base, which only cost disk)
+  wt list                      worktree names, fast; the branch shows when it isn't the name
+  wt list --full               report per worktree: size, bytes copied up unchanged from
+                               the base (they only cost disk), clean or dirty(N), idle or
+                               busy with the processes holding it, and last write. Busy
+                               only catches running commands; a recent write suggests an
+                               agent is at work.
   wt remove <branch>           when the worktree is done; refuses if busy or dirty
                                (--force discards uncommitted changes; the branch survives)
   A worktree with uncommitted changes blocks `wt remove` and `wt update` until the
@@ -1267,38 +1307,57 @@ def timing_lines(timings: Timings) -> list[str]:
     return [f"{t['step']}: {t['seconds']}s" for t in timings]
 
 
-def list_cells(r: dict[str, object], now: float) -> list[str]:
-    """Name, optional size, state, last write, and notes; the branch shows only when it isn't the name."""
-    cells = [str(r["name"])]
-    if "disk_bytes" in r:
-        cells.append(human_bytes(r["disk_bytes"]))
-    if r["mounted"]:
-        dirty_files = r["dirty_files"]
-        cells.append(f"{f'dirty({dirty_files})' if dirty_files else 'clean'}, {'busy' if r['busy'] else 'idle'}")
-    else:
-        cells.append("UNMOUNTED")
-    written = r.get("last_write")
-    cells.append(f"wrote {human_age(max(0.0, now - written))} ago" if written is not None else "never written")
-    notes = []
-    if "identical_bytes" in r:
-        notes.append(f"({human_bytes(r['identical_bytes'])} identical to base)")
-    if r.get("branch", r["name"]) != r["name"]:
-        notes.append(f"on {r['branch']}")
-    cells.append(" ".join(notes))
-    return cells
+def format_table(rows: list[list[str]], right: frozenset[int] = frozenset()) -> list[str]:
+    """Rows padded into columns; columns in `right` are right-aligned."""
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    return [
+        "  ".join(cell.rjust(w) if i in right else cell.ljust(w) for i, (cell, w) in enumerate(zip(row, widths))).rstrip()
+        for row in rows
+    ]
 
 
-def render_list(rows: list[dict[str, object]], now: float | None = None) -> str:
+def worktree_note(r: dict[str, object]) -> str:
+    """UNMOUNTED, or the branch when it isn't the worktree's name."""
+    if not r["mounted"]:
+        return "UNMOUNTED"
+    return f"on {r['branch']}" if r.get("branch", r["name"]) != r["name"] else ""
+
+
+def render_list(result: dict[str, object], now: float | None = None) -> str:
+    rows = result["worktrees"]
     if not rows:
         return "no worktrees"
+    if not result.get("full"):
+        return "\n".join(format_table([[r["name"], worktree_note(r)] for r in rows]))
     now = time.time() if now is None else now
-    table = [list_cells(r, now) for r in rows]
-    widths = [max(len(row[i]) for row in table) for i in range(len(table[0]))]
-    size_column = 1 if "disk_bytes" in rows[0] else None
-    return "\n".join(
-        "  ".join(cell.rjust(w) if i == size_column else cell.ljust(w) for i, (cell, w) in enumerate(zip(row, widths))).rstrip()
-        for row in table
-    )
+    table = [["NAME", "SIZE", "IDENTICAL", "CHANGES", "ACTIVITY", "LAST WRITE", ""]]
+    for r in rows:
+        if r["mounted"]:
+            changes = f"dirty({r['dirty_files']})" if r["dirty_files"] else "clean"
+            activity = "busy" if r["busy"] else "idle"
+        else:
+            changes = activity = "-"
+        written = r["last_write"]
+        table.append(
+            [
+                r["name"],
+                human_bytes(r["disk_bytes"]),
+                human_bytes(r["identical_bytes"]),
+                changes,
+                activity,
+                f"{human_age(max(0.0, now - written))} ago" if written is not None else "never",
+                worktree_note(r),
+            ]
+        )
+    totals = [sum(r[k] for r in rows) for k in ("disk_bytes", "identical_bytes")]
+    table.append(["total", *map(human_bytes, totals), "", "", "", ""])
+    lines = format_table(table, right=frozenset({1, 2}))
+    out = lines[:1]
+    for r, line in zip(rows, lines[1:]):
+        out.append(line)
+        out += [f"    {p['pid']} {p['name']}: {p['command']}" for p in r.get("busy_processes", [])]
+    out.append(lines[-1])
+    return "\n".join(out)
 
 
 def base_size_text(stats: dict[str, object]) -> str:
@@ -1340,7 +1399,7 @@ def render(command: str, result: dict[str, object]) -> str:
     if command == "guide":
         return result["guide"].rstrip("\n")
     if command == "list":
-        return render_list(result["worktrees"])
+        return render_list(result)
     if command in ("create", "demote"):
         verb = "new branch" if result["created_branch"] else "existing branch"
         line = f"{result['path']}  ({verb} {result['branch']}, {result['create_seconds']}s)"
@@ -1407,9 +1466,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_remove)
 
     s = sub.add_parser("list", help="list this repo's worktrees")
-    s.add_argument("--size", action="store_true", help="add each worktree's own disk use (slower)")
     s.add_argument(
-        "--waste", action="store_true", help="also measure files copied up unchanged from the base (slowest; implies --size)"
+        "--full",
+        action="store_true",
+        help="report size, bytes identical to the base, changes, busy processes and last write (slow)",
     )
     s.set_defaults(fn=cmd_list)
     s = sub.add_parser("status", help="base, worktree disk use and savings over plain git worktrees, caches, disk")

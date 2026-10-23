@@ -97,8 +97,8 @@ class StateDiscovery(unittest.TestCase):
         self.assertEqual(wt.worktree_names_from_state(Path("/nonexistent/x")), [])
 
 
-def entry(kind, links, disk_bytes, path, size=None):
-    return wt.Entry(kind, links, disk_bytes, disk_bytes if size is None else size, path)
+def entry(kind, links, disk_bytes, path, size=None, mtime=0.0):
+    return wt.Entry(kind, links, disk_bytes, disk_bytes if size is None else size, mtime, path)
 
 
 def lower(links, disk_bytes, size=None, kind="f"):
@@ -111,15 +111,20 @@ class DiskAccounting(unittest.TestCase):
         self.assertEqual(wt.tally_usage(out), wt.Usage(unique_bytes=24 * 512, shared_bytes=64 * 512))
 
     def test_parse_entries_keeps_spaces_and_root(self):
-        out = "d 4 8 4096 \0f 1 8 3000 dir/a file.txt\0c 1 0 0 gone\0"
+        out = "d 4 8 4096 1700000000.5 \0f 1 8 3000 1700000100.25 dir/a file.txt\0c 1 0 0 1600000000.0 gone\0"
         self.assertEqual(
             wt.parse_find_entries(out),
             [
-                wt.Entry("d", 4, 4096, 4096, ""),
-                wt.Entry("f", 1, 4096, 3000, "dir/a file.txt"),
-                wt.Entry("c", 1, 0, 0, "gone"),
+                wt.Entry("d", 4, 4096, 4096, 1700000000.5, ""),
+                wt.Entry("f", 1, 4096, 3000, 1700000100.25, "dir/a file.txt"),
+                wt.Entry("c", 1, 0, 0, 1600000000.0, "gone"),
             ],
         )
+
+    def test_summarize_upper_newest_mtime(self):
+        entries = [entry("d", 2, 0, "", mtime=5.0), entry("f", 1, 0, "x", mtime=9.0), entry("f", 2, 0, "y", mtime=7.0)]
+        self.assertEqual(wt.summarize_upper(entries, lambda rel: None).newest_mtime, 9.0)
+        self.assertIsNone(wt.summarize_upper([], lambda rel: None).newest_mtime)
 
     def test_summarize_upper_overlap(self):
         base = {
@@ -201,46 +206,66 @@ class Formatting(unittest.TestCase):
         self.assertEqual(wt.human_bytes(2048), "2K")
         self.assertEqual(wt.human_bytes(5 * 1024**3), "5.0G")
 
-    def test_render_list_states_last_write_and_branch_only_when_different(self):
-        now = 100_000.0
-        out = wt.render_list(
-            [
-                {"name": "a", "mounted": True, "branch": "a", "dirty_files": 2, "busy": True, "last_write": now - 42},
-                {"name": "long/name", "mounted": True, "branch": "other", "dirty_files": 0, "busy": False, "last_write": now - 7200},
-                {"name": "b", "mounted": False, "last_write": None},
-            ],
-            now,
+    def test_render_list_names_with_notes(self):
+        out = wt.render(
+            "list",
+            {
+                "repo": "/r",
+                "full": False,
+                "worktrees": [
+                    {"name": "a", "path": "/r.wt/a", "mounted": True, "branch": "a"},
+                    {"name": "long/name", "path": "/r.wt/long/name", "mounted": True, "branch": "other"},
+                    {"name": "b", "path": "/r.wt/b", "mounted": False},
+                ],
+            },
         )
+        self.assertEqual(out.splitlines(), ["a", "long/name  on other", "b          UNMOUNTED"])
+
+    def test_render_full_report(self):
+        now = 100_000.0
+        g = 1024**3
+        full = {"dirty_files": 0, "busy": False, "busy_processes": []}
+        rows = [
+            {"name": "a", "mounted": True, "branch": "a", **full, "disk_bytes": 2 * g, "identical_bytes": g // 2, "last_write": now - 42},
+            {
+                "name": "long/name",
+                "mounted": True,
+                "branch": "other",
+                "dirty_files": 3,
+                "busy": True,
+                "busy_processes": [{"pid": 41, "name": "node", "command": "node turbo typecheck"}],
+                "disk_bytes": g,
+                "identical_bytes": 0,
+                "last_write": now - 7200,
+            },
+            {"name": "b", "mounted": False, "disk_bytes": 0, "identical_bytes": 0, "last_write": None},
+        ]
+        out = wt.render_list({"repo": "/r", "full": True, "worktrees": rows}, now)
         self.assertEqual(
             out.splitlines(),
             [
-                "a          dirty(2), busy  wrote 42s ago",
-                "long/name  clean, idle     wrote 2.0h ago  on other",
-                "b          UNMOUNTED       never written",
+                "NAME       SIZE  IDENTICAL  CHANGES   ACTIVITY  LAST WRITE",
+                "a          2.0G     512.0M  clean     idle      42s ago",
+                "long/name  1.0G         0B  dirty(3)  busy      2.0h ago    on other",
+                "    41 node: node turbo typecheck",
+                "b            0B         0B  -         -         never       UNMOUNTED",
+                "total      3.0G     512.0M",
             ],
         )
 
-    def test_render_list_sizes(self):
-        now = 100_000.0
-        row = {"name": "a", "mounted": True, "branch": "a", "dirty_files": 0, "busy": False, "last_write": now - 180}
-        out = wt.render_list(
-            [
-                {**row, "disk_bytes": 2 * 1024**3, "identical_bytes": 512 * 1024**2},
-                {**row, "name": "b", "branch": "b", "disk_bytes": 12 * 1024**2, "identical_bytes": 0},
-            ],
-            now,
-        )
+    def test_branch_from_head(self):
+        self.assertEqual(wt.branch_from_head("ref: refs/heads/weston/fix\n"), "weston/fix")
+        self.assertEqual(wt.branch_from_head("c1b7927ae592697899a40d0f521c95f5bb97ef56\n"), "detached@c1b7927ae59")
+
+    def test_describe_process(self):
         self.assertEqual(
-            out.splitlines(),
-            [
-                "a   2.0G  clean, idle  wrote 3m ago  (512.0M identical to base)",
-                "b  12.0M  clean, idle  wrote 3m ago  (0B identical to base)",
-            ],
+            wt.describe_process(7, "node", b"node\0/usr/bin/turbo\0typecheck\0"),
+            {"pid": 7, "name": "node", "command": "node /usr/bin/turbo typecheck"},
         )
-
-    def test_newest_mtime(self):
-        self.assertEqual(wt.newest_mtime("1700000000.5\n1700000100.25\n1600000000.0\n"), 1700000100.25)
-        self.assertIsNone(wt.newest_mtime(""))
+        self.assertEqual(wt.describe_process(8, "kworker", b"")["command"], "[kworker]")
+        long = wt.describe_process(9, "sh", b"x" * 300)["command"]
+        self.assertEqual(len(long), wt.COMMAND_WIDTH)
+        self.assertTrue(long.endswith("…"))
 
     def status_result(self, **overrides):
         result = {
