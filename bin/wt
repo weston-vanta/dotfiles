@@ -1183,7 +1183,8 @@ COORDINATOR PATTERN
                                prints {wt_dir}/<branch>. Name it per your team's convention.
   -> dispatch a sub-agent WITHOUT worktree isolation; put the path in its prompt
      and include the sub-agent rules below
-  wt list                      one line per worktree with busy / dirty flags
+  wt list                      one line per worktree: clean or dirty(N), idle or busy,
+                               and its branch when it isn't the worktree's name
                                (--size adds disk use; --waste adds bytes copied up
                                unchanged from the base, which only cost disk)
   wt remove <branch>           when the worktree is done; refuses if busy or dirty
@@ -1235,6 +1236,37 @@ def timing_lines(timings: Timings) -> list[str]:
     return [f"{t['step']}: {t['seconds']}s" for t in timings]
 
 
+def list_cells(r: dict[str, object]) -> list[str]:
+    """Name, optional size, state, and notes; the branch shows only when it isn't the name."""
+    cells = [str(r["name"])]
+    if "disk_bytes" in r:
+        cells.append(human_bytes(r["disk_bytes"]))
+    if r["mounted"]:
+        dirty_files = r["dirty_files"]
+        cells.append(f"{f'dirty({dirty_files})' if dirty_files else 'clean'}, {'busy' if r['busy'] else 'idle'}")
+    else:
+        cells.append("UNMOUNTED")
+    notes = []
+    if "identical_bytes" in r:
+        notes.append(f"({human_bytes(r['identical_bytes'])} identical to base)")
+    if r.get("branch", r["name"]) != r["name"]:
+        notes.append(f"on {r['branch']}")
+    cells.append(" ".join(notes))
+    return cells
+
+
+def render_list(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return "no worktrees"
+    table = [list_cells(r) for r in rows]
+    widths = [max(len(row[i]) for row in table) for i in range(len(table[0]))]
+    size_column = 1 if "disk_bytes" in rows[0] else None
+    return "\n".join(
+        "  ".join(cell.rjust(w) if i == size_column else cell.ljust(w) for i, (cell, w) in enumerate(zip(row, widths))).rstrip()
+        for row in table
+    )
+
+
 def base_size_text(stats: dict[str, object]) -> str:
     text = f"{human_bytes(stats['unique_bytes'])} on disk"
     if stats["shared_bytes"]:
@@ -1274,23 +1306,7 @@ def render(command: str, result: dict[str, object]) -> str:
     if command == "guide":
         return result["guide"].rstrip("\n")
     if command == "list":
-        rows = result["worktrees"]
-        if not rows:
-            return "no worktrees"
-        lines = []
-        for r in rows:
-            flags = []
-            if not r["mounted"]:
-                flags.append("UNMOUNTED")
-            if r.get("busy"):
-                flags.append("busy")
-            if r.get("dirty_files"):
-                flags.append(f"dirty({r['dirty_files']})")
-            sizes = f" {human_bytes(r['disk_bytes']):>8}" if "disk_bytes" in r else ""
-            if "identical_bytes" in r:
-                sizes += f"  ({human_bytes(r['identical_bytes'])} identical to base)"
-            lines.append(f"{r['name']:<40} {r.get('branch', '-'):<40}{sizes}  {' '.join(flags)}".rstrip())
-        return "\n".join(lines)
+        return render_list(result["worktrees"])
     if command in ("create", "demote"):
         verb = "new branch" if result["created_branch"] else "existing branch"
         line = f"{result['path']}  ({verb} {result['branch']}, {result['create_seconds']}s)"

@@ -201,27 +201,39 @@ class Formatting(unittest.TestCase):
         self.assertEqual(wt.human_bytes(2048), "2K")
         self.assertEqual(wt.human_bytes(5 * 1024**3), "5.0G")
 
-    def test_render_list_flags(self):
+    def test_render_list_states_and_branch_only_when_different(self):
         out = wt.render(
             "list",
             {
                 "repo": "/r",
                 "worktrees": [
                     {"name": "a", "path": "/r.wt/a", "mounted": True, "branch": "a", "dirty_files": 2, "busy": True},
+                    {"name": "long/name", "path": "/r.wt/long/name", "mounted": True, "branch": "other", "dirty_files": 0, "busy": False},
                     {"name": "b", "path": "/r.wt/b", "mounted": False},
                 ],
             },
         )
-        self.assertIn("dirty(2)", out)
-        self.assertIn("busy", out)
-        self.assertIn("UNMOUNTED", out)
-        self.assertNotIn("identical", out)
+        self.assertEqual(
+            out.splitlines(),
+            ["a          dirty(2), busy", "long/name  clean, idle     on other", "b          UNMOUNTED"],
+        )
 
     def test_render_list_sizes(self):
         row = {"name": "a", "path": "/r.wt/a", "mounted": True, "branch": "a", "dirty_files": 0, "busy": False}
-        out = wt.render("list", {"repo": "/r", "worktrees": [{**row, "disk_bytes": 2 * 1024**3, "identical_bytes": 512 * 1024**2}]})
-        self.assertIn("2.0G", out)
-        self.assertIn("(512.0M identical to base)", out)
+        out = wt.render(
+            "list",
+            {
+                "repo": "/r",
+                "worktrees": [
+                    {**row, "disk_bytes": 2 * 1024**3, "identical_bytes": 512 * 1024**2},
+                    {**row, "name": "b", "branch": "b", "disk_bytes": 12 * 1024**2, "identical_bytes": 0},
+                ],
+            },
+        )
+        self.assertEqual(
+            out.splitlines(),
+            ["a   2.0G  clean, idle  (512.0M identical to base)", "b  12.0M  clean, idle  (0B identical to base)"],
+        )
 
     def status_result(self, **overrides):
         result = {
