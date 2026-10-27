@@ -6,6 +6,10 @@ if [[ -f /home/linuxbrew/.linuxbrew/bin/brew ]]; then
   eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv zsh)"
 fi
 
+# User-installed CLIs (claude, herdr, flow) live in ~/.local/bin. Here rather than
+# .zshrc so that non-interactive shells (ssh commands, herdr servers) see them.
+path=($HOME/.local/bin ${path:#$HOME/.local/bin})
+
 # Personal tools (e.g. `wt`, overlayfs worktrees)
 export PATH=$HOME/dotfiles/bin:$PATH
 
