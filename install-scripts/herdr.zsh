@@ -6,7 +6,9 @@
 # it in ~/.claude/settings.json. bootstrap.sh symlinks that settings file into
 # this repo before it runs install scripts, so the hook entry lands in
 # agents/claude/settings.json and reappears as a diff whenever herdr bumps the
-# integration version — re-commit it. The hook script itself is managed and
+# integration version — re-commit it, after changing the hook command's
+# absolute path back to "$HOME/.claude/hooks/herdr-agent-state.sh" so the one
+# file works on every machine. The hook script itself is managed and
 # overwritten by herdr, so it is deliberately not tracked here.
 
 set -euo pipefail

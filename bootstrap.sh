@@ -103,7 +103,7 @@ create_symlink ".config/herdr/config.toml" "$HOME/.config/herdr/config.toml"
 
 echo
 echo "==> Symlinking agent config"
-# Skills are not in this repo — flow owns them, installed by install-scripts/flow.zsh.
+# Skills are not managed by this repo.
 create_symlink "agents/AGENTS.md" "$HOME/.claude/CLAUDE.md"
 create_symlink "agents/claude/settings.json" "$HOME/.claude/settings.json"
 
