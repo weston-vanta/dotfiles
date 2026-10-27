@@ -10,7 +10,7 @@ This repository contains configuration files that automatically set up a consist
 - **[herdr](https://herdr.dev)** agent workspace manager (Ctrl+Space prefix)
 - **Neovim** with LazyVim distribution
 - **Git** user configuration
-- **[flow](https://github.com/weston-vanta/flow)** agent skill pipeline, installed to `~/.flow`
+- **[flow](https://github.com/weston-vanta/flow)** supervisor for agent sessions across dev environments, cloned to `/workspaces/flow` and kept current by `install-scripts/flow.zsh`
 
 ## Installation
 
