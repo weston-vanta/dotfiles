@@ -56,7 +56,7 @@ selection, blink.cmp manual complete).
 
 **Agent config** lives in `agents/` (no dot, to distinguish from project-level `.claude/` directories). `agents/AGENTS.md` holds harness-neutral, user-scoped rules and is symlinked to `~/.claude/CLAUDE.md`; harness-specific config sits in a subdirectory (`agents/claude/settings.json`). Agent *skills* are not managed by this repo.
 
-**flow** ([weston-vanta/flow](https://github.com/weston-vanta/flow)), the supervisor for agent sessions across dev environments, does not install anything into the agent config. `install-scripts/flow.zsh` clones it to `/workspaces/flow` and runs its `scripts/install.sh`, which pulls the clone, links its `state/` to the shared state directory on EFS, and builds `target/release/flow`; `.zshrc` puts that directory on `PATH` when it exists. Machines without `/workspaces` (the Mac) skip it.
+**flow** ([weston-vanta/flow](https://github.com/weston-vanta/flow)), the supervisor for agent sessions across dev environments, does not install anything into the agent config. `install-scripts/flow.zsh` clones it to `/workspaces/flow` and runs its `scripts/install.sh`, which pulls the clone, links its `state/` to the shared state directory on EFS, builds the binary, and links it into `~/.local/bin`. Machines without the shared state mount (the Mac) skip it.
 
 ## Conventions
 

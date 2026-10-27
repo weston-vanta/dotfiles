@@ -2,22 +2,26 @@
 # Installs flow (github.com/weston-vanta/flow), the supervisor for agents across dev
 # environments.
 #
+# flow installs where its shared state mount is: $EFS_MOUNT_POINT, holding the shared state
+# directory ($FLOW_STATE_DIR, default $EFS_MOUNT_POINT/flow/state). bootstrap.sh runs this
+# script on every machine, so the Mac and a bootstrap that runs before the mount is up skip
+# it; post-start-install.sh, which has the same mount check, installs it on the next start.
+#
 # Clones flow to $FLOW_DIR (default /workspaces/flow) unless something is already there,
 # then runs the clone's scripts/install.sh, which pulls it, links its state/ to the shared
-# state directory ($FLOW_STATE_DIR, default /efs-home/flow/state), and builds
-# target/release/flow. Both steps are idempotent, so post-start-install.sh runs this on
-# every machine start too. A machine without the clone's parent directory (the Mac has no
-# /workspaces) is skipped.
+# state directory, builds target/release/flow, and links the binary into ~/.local/bin. Both
+# steps are idempotent, so post-start-install.sh runs this on every machine start too.
 
 set -euo pipefail
 
-FLOW_REPO="https://github.com/weston-vanta/flow.git"
-export FLOW_DIR="${FLOW_DIR:-/workspaces/flow}"
-
-if [[ ! -d ${FLOW_DIR:h} ]]; then
-  echo "flow: no ${FLOW_DIR:h} on this machine, skipping"
+if [[ -z ${EFS_MOUNT_POINT:-} ]] || ! mountpoint -q "$EFS_MOUNT_POINT"; then
+  echo "flow: no shared state mount on this machine, skipping"
   exit 0
 fi
+
+FLOW_REPO="https://github.com/weston-vanta/flow.git"
+export FLOW_DIR="${FLOW_DIR:-/workspaces/flow}"
+export FLOW_STATE_DIR="${FLOW_STATE_DIR:-$EFS_MOUNT_POINT/flow/state}"
 
 # Failures below are soft: bootstrap and post-start run with `set -e`, and the rest of
 # what they set up is still useful without flow.
@@ -31,9 +35,7 @@ else
   fi
 fi
 
-# .zshrc puts target/release on PATH for shells; install.sh runs outside one, so it
-# would otherwise ask for a PATH entry that is already taken care of.
-if ! PATH="$FLOW_DIR/target/release:$PATH" bash "$FLOW_DIR/scripts/install.sh"; then
+if ! bash "$FLOW_DIR/scripts/install.sh"; then
   echo "WARNING: flow's install.sh failed; fix the cause above, then re-run:"
   echo "  bash $FLOW_DIR/scripts/install.sh"
 fi
