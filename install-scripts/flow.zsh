@@ -5,7 +5,7 @@
 # flow installs where its shared state mount is: $EFS_MOUNT_POINT, holding the shared state
 # directory ($FLOW_STATE_DIR, default $EFS_MOUNT_POINT/flow/state). bootstrap.sh runs this
 # script on every machine, so the Mac and a bootstrap that runs before the mount is up skip
-# it; post-start-install.sh, which has the same mount check, installs it on the next start.
+# it; post-start-install.sh, which has a similar mount check, installs it on the next start.
 #
 # Clones flow to $FLOW_DIR (default /workspaces/flow) unless something is already there,
 # then runs the clone's scripts/install.sh, which pulls it, links its state/ to the shared
@@ -14,7 +14,8 @@
 
 set -euo pipefail
 
-if [[ -z ${EFS_MOUNT_POINT:-} ]] || ! mountpoint -q "$EFS_MOUNT_POINT"; then
+if [[ -z ${EFS_MOUNT_POINT:-} ]] || ! command -v mountpoint >/dev/null ||
+  ! mountpoint -q "$EFS_MOUNT_POINT"; then
   echo "flow: no shared state mount on this machine, skipping"
   exit 0
 fi
@@ -35,7 +36,8 @@ else
   fi
 fi
 
-if ! bash "$FLOW_DIR/scripts/install.sh"; then
+# The shell rc puts ~/.local/bin on PATH for shells; install.sh runs outside one here.
+if ! PATH="$HOME/.local/bin:$PATH" bash "$FLOW_DIR/scripts/install.sh"; then
   echo "WARNING: flow's install.sh failed; fix the cause above, then re-run:"
   echo "  bash $FLOW_DIR/scripts/install.sh"
 fi
