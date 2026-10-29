@@ -24,6 +24,12 @@ cd ~/dotfiles
 
 The bootstrap script creates symlinks from this repository to your home directory for all configuration files.
 
+## Agent skills
+
+Skills in `agents/skills/` are linked into `~/.claude/skills/` by the bootstrap script. To use one without these dotfiles, copy its directory into your own `~/.claude/skills/`.
+
+- `explaining-code` -- builds an interactive explainer page for a code change, an existing system, or a planned design: a diagram drawn at the level of each component's interface, with flows to step through and checks by fresh agents.
+
 ## Custom zsh functions
 
 - `prs` -- view and open GitHub PRs (`prs help` for usage).

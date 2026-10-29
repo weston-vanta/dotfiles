@@ -103,9 +103,13 @@ create_symlink ".config/herdr/config.toml" "$HOME/.config/herdr/config.toml"
 
 echo
 echo "==> Symlinking agent config"
-# Skills are not managed by this repo.
 create_symlink "agents/AGENTS.md" "$HOME/.claude/CLAUDE.md"
 create_symlink "agents/claude/settings.json" "$HOME/.claude/settings.json"
+# Each skill is linked on its own, since ~/.claude/skills/ also holds skills from other sources.
+for skill_dir in "$DOTFILES_DIR/agents/skills"/*/; do
+  skill_name="$(basename "$skill_dir")"
+  create_symlink "agents/skills/$skill_name" "$HOME/.claude/skills/$skill_name"
+done
 
 echo
 echo "==> Symlinking SSH custom config"

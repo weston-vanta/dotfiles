@@ -70,6 +70,16 @@ done
 # the EFS copy.
 ln -sfn "$DOTFILES_DIR/agents/AGENTS.md" "$HOME/.claude/CLAUDE.md"
 ln -sfn "$DOTFILES_DIR/agents/claude/settings.json" "$HOME/.claude/settings.json"
+mkdir -p "$HOME/.claude/skills"
+for skill_dir in "$DOTFILES_DIR/agents/skills"/*/; do
+  skill_link="$HOME/.claude/skills/$(basename "$skill_dir")"
+  # ln -sfn would nest the link inside a real directory, so leave one in place for bootstrap.sh to replace.
+  if [[ -d "$skill_link" && ! -L "$skill_link" ]]; then
+    echo "Skipping $skill_link: a directory is in the way; run bootstrap.sh to replace it"
+    continue
+  fi
+  ln -sfn "${skill_dir%/}" "$skill_link"
+done
 
 # flow's state/ links into the mount, so this runs once the shared links are up.
 zsh "$DOTFILES_DIR/install-scripts/flow.zsh"

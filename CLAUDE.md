@@ -16,6 +16,7 @@ A personal dotfiles repository that manages a complete development environment w
 The bootstrap script symlinks everything from this repo into `$HOME`:
 - `.config/*` directories → `~/.config/`
 - `agents/AGENTS.md` → `~/.claude/CLAUDE.md`, `agents/claude/settings.json` → `~/.claude/settings.json` (individual files, not the whole directory, since `~/.claude/` holds transient data)
+- `agents/skills/*` → `~/.claude/skills/*` (one link per skill, since `~/.claude/skills/` also holds skills from other sources)
 - `.gitconfig`, `.oh-my-zsh`, `.zshrc` → `~/`
 
 It then runs `install-scripts/*.zsh`, which install Neovim, herdr, googleworkspace-cli (`gws`), and flow.
@@ -54,7 +55,7 @@ Unlike tmux, herdr has no `send-prefix` action, so `<C-Space>` cannot be passed
 through to apps in a pane — it is unreachable in Neovim (treesitter incremental
 selection, blink.cmp manual complete).
 
-**Agent config** lives in `agents/` (no dot, to distinguish from project-level `.claude/` directories). `agents/AGENTS.md` holds harness-neutral, user-scoped rules and is symlinked to `~/.claude/CLAUDE.md`; harness-specific config sits in a subdirectory (`agents/claude/settings.json`). Agent *skills* are not managed by this repo.
+**Agent config** lives in `agents/` (no dot, to distinguish from project-level `.claude/` directories). `agents/AGENTS.md` holds harness-neutral, user-scoped rules and is symlinked to `~/.claude/CLAUDE.md`; harness-specific config sits in a subdirectory (`agents/claude/settings.json`). Skills written here live in `agents/skills/<name>/`, each linked into `~/.claude/skills/`; skills from flow and other sources are linked by their own installers.
 
 **flow** ([weston-vanta/flow](https://github.com/weston-vanta/flow)), the supervisor for agent sessions across dev environments, does not install anything into the agent config. `install-scripts/flow.zsh` clones it to `/workspaces/flow` and runs its `scripts/install.sh`, which pulls the clone, links its `state/` to the shared state directory on EFS, builds the binary, and links it into `~/.local/bin`. Machines without the shared state mount (the Mac) skip it.
 
