@@ -70,6 +70,7 @@ done
 # the EFS copy.
 ln -sfn "$DOTFILES_DIR/agents/AGENTS.md" "$HOME/.claude/CLAUDE.md"
 ln -sfn "$DOTFILES_DIR/agents/claude/settings.json" "$HOME/.claude/settings.json"
+ln -sfn "$DOTFILES_DIR/agents/claude/statusline.sh" "$HOME/.claude/statusline.sh"
 
 # flow's state/ links into the mount, so this runs once the shared links are up.
 zsh "$DOTFILES_DIR/install-scripts/flow.zsh"

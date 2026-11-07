@@ -105,6 +105,7 @@ echo
 echo "==> Symlinking agent config"
 create_symlink "agents/AGENTS.md" "$HOME/.claude/CLAUDE.md"
 create_symlink "agents/claude/settings.json" "$HOME/.claude/settings.json"
+create_symlink "agents/claude/statusline.sh" "$HOME/.claude/statusline.sh"
 # Each skill is linked on its own, since ~/.claude/skills/ also holds skills from other sources.
 for skill_dir in "$DOTFILES_DIR/agents/skills"/*/; do
   skill_name="$(basename "$skill_dir")"

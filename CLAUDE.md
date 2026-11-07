@@ -15,7 +15,7 @@ A personal dotfiles repository that manages a complete development environment w
 
 The bootstrap script symlinks everything from this repo into `$HOME`:
 - `.config/*` directories → `~/.config/`
-- `agents/AGENTS.md` → `~/.claude/CLAUDE.md`, `agents/claude/settings.json` → `~/.claude/settings.json` (individual files, not the whole directory, since `~/.claude/` holds transient data)
+- `agents/AGENTS.md` → `~/.claude/CLAUDE.md`, `agents/claude/settings.json` → `~/.claude/settings.json`, `agents/claude/statusline.sh` → `~/.claude/statusline.sh` (individual files, not the whole directory, since `~/.claude/` holds transient data)
 - `agents/skills/*` → `~/.claude/skills/*` (one link per skill, since `~/.claude/skills/` also holds skills from other sources)
 - `.gitconfig`, `.oh-my-zsh`, `.zshrc` → `~/`
 
