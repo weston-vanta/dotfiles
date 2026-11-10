@@ -2,8 +2,7 @@
 #
 # Run by the dev environment's post-start step after it mounts shared storage
 # at $EFS_MOUNT_POINT. Replaces selected home paths with symlinks into that
-# mount so they are shared across environments, then brings flow up to date
-# (install-scripts/flow.zsh).
+# mount so they are shared across environments.
 #
 # Having this hook replaces the environment's default shared-storage hook, so
 # it covers everything that one shares.
@@ -15,7 +14,6 @@ EFS="${EFS_MOUNT_POINT:-}"
 
 if [[ -z "$EFS" || "$EFS" == "$HOME" ]] || ! mountpoint -q "$EFS"; then
   echo "EFS is not mounted beside the home directory, skipping shared links"
-  echo "flow: its shared state is on EFS, skipping"
   exit 0
 fi
 
@@ -72,5 +70,3 @@ ln -sfn "$DOTFILES_DIR/agents/AGENTS.md" "$HOME/.claude/CLAUDE.md"
 ln -sfn "$DOTFILES_DIR/agents/claude/settings.json" "$HOME/.claude/settings.json"
 ln -sfn "$DOTFILES_DIR/agents/claude/statusline.sh" "$HOME/.claude/statusline.sh"
 
-# flow's state/ links into the mount, so this runs once the shared links are up.
-zsh "$DOTFILES_DIR/install-scripts/flow.zsh"

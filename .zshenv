@@ -6,9 +6,13 @@ if [[ -f /home/linuxbrew/.linuxbrew/bin/brew ]]; then
   eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv zsh)"
 fi
 
-# User-installed CLIs (claude, herdr, flow) live in ~/.local/bin. Here rather than
+# User-installed CLIs (claude, herdr) live in ~/.local/bin. Here rather than
 # .zshrc so that non-interactive shells (ssh commands, herdr servers) see them.
 path=($HOME/.local/bin ${path:#$HOME/.local/bin})
+
+# flow (github.com/weston-vanta/flow) is installed by hand into the shared /efs-home on
+# CDEs. Ahead of ~/.local/bin so a stale v1 link there can't shadow it.
+[[ -d /efs-home/flow/bin ]] && path=(/efs-home/flow/bin $path)
 
 # Personal tools (e.g. `wt`, overlayfs worktrees)
 export PATH=$HOME/dotfiles/bin:$PATH

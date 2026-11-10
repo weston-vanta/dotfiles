@@ -19,9 +19,9 @@ The bootstrap script symlinks everything from this repo into `$HOME`:
 - `agents/skills/*` → `~/.claude/skills/*` (one link per skill, since `~/.claude/skills/` also holds skills from other sources)
 - `.gitconfig`, `.oh-my-zsh`, `.zshrc` → `~/`
 
-It then runs `install-scripts/*.zsh`, which install Neovim, herdr, googleworkspace-cli (`gws`), and flow.
+It then runs `install-scripts/*.zsh`, which install Neovim, herdr, and googleworkspace-cli (`gws`).
 
-On cloud dev environments with a shared network mount at `$EFS_MOUNT_POINT`, `post-start-install.sh` runs after the mount is set up. It replaces the paths listed at the top of the script with symlinks into the mount so they persist across environments, then re-links the agent config into the shared `~/.claude` and runs `install-scripts/flow.zsh` to bring flow up to date. Only paths belong in this repo, never the mount's contents.
+On cloud dev environments with a shared network mount at `$EFS_MOUNT_POINT`, `post-start-install.sh` runs after the mount is set up. It replaces the paths listed at the top of the script with symlinks into the mount so they persist across environments, then re-links the agent config into the shared `~/.claude`. Only paths belong in this repo, never the mount's contents.
 
 `.config/herdr/` is the one `.config` entry linked file-by-file rather than as a
 directory, because `~/.config/herdr/` also holds sockets, logs, session state, and
@@ -57,7 +57,7 @@ selection, blink.cmp manual complete).
 
 **Agent config** lives in `agents/` (no dot, to distinguish from project-level `.claude/` directories). `agents/AGENTS.md` holds harness-neutral, user-scoped rules and is symlinked to `~/.claude/CLAUDE.md`; harness-specific config sits in a subdirectory (`agents/claude/settings.json`). Skills written here live in `agents/skills/<name>/`, each linked into `~/.claude/skills/`; skills from flow and other sources are linked by their own installers.
 
-**flow** ([weston-vanta/flow](https://github.com/weston-vanta/flow)), the supervisor for agent sessions across dev environments, does not install anything into the agent config. `install-scripts/flow.zsh` clones it to `/workspaces/flow` and runs its `scripts/install.sh`, which pulls the clone, links its `state/` to the shared state directory on EFS, builds the binary, and links it into `~/.local/bin`. Machines without the shared state mount (the Mac) skip it.
+**flow** ([weston-vanta/flow](https://github.com/weston-vanta/flow)) shows every agent Session across the CDEs with the PRs it owns. It is installed by hand on the Flow CDE (`scripts/install` in its repo) into the shared `/efs-home/flow/`: binaries in `bin/`, and a Claude Code plugin in `claude/` that registers flow's hooks. Dotfiles only puts `/efs-home/flow/bin` on PATH (`.zshenv`) and enables the plugin as `flow@flow` in `agents/claude/settings.json`, so flow owns its hook list. Machines without `/efs-home/flow` (the Mac) have neither.
 
 ## Conventions
 

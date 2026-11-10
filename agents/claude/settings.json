@@ -25,11 +25,20 @@
     "rust-analyzer-lsp@claude-plugins-official": true,
     "typescript-lsp@claude-plugins-official": true,
     "code-simplifier@claude-plugins-official": true,
-    "superpowers@claude-plugins-official": false
+    "superpowers@claude-plugins-official": false,
+    "flow@flow": true
   },
   "effortLevel": "xhigh",
   "autoCompactWindow": 500000,
   "tui": "fullscreen",
   "autoCompactEnabled": true,
-  "skipAutoPermissionPrompt": true
+  "skipAutoPermissionPrompt": true,
+  "extraKnownMarketplaces": {
+    "flow": {
+      "source": {
+        "source": "directory",
+        "path": "/efs-home/flow/claude"
+      }
+    }
+  }
 }
