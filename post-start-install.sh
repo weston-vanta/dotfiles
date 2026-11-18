@@ -17,7 +17,7 @@ if [[ -z "$EFS" || "$EFS" == "$HOME" ]] || ! mountpoint -q "$EFS"; then
   exit 0
 fi
 
-SHARED_DIRS=(.claude .config/gh .config/gws .config/acli)
+SHARED_DIRS=(.claude .config/gh .config/gws .config/acli .config/agents)
 # Environment setup creates a fresh local ~/.claude.json, so the EFS copy wins.
 SHARED_FILES=(.claude.json)
 # Nothing in setup creates these, so a local regular file means the tool

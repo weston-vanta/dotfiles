@@ -6,3 +6,4 @@
 - Do not be overly poetic when writing code or writing about code. Metaphorical terms may be appropriate in explanations, but always ground your references to the names used in the code.
 - On obsidian CDEs (`/workspaces/obsidian`), manage worktrees with `wt` (run `wt guide` first), creating them through `flow wt create` where `flow` is on PATH; never use `git worktree add` or the Agent tool's worktree isolation there.
 - Where `flow` is on PATH, run `flow guide` before creating worktrees or reading other Sessions' PRs.
+- When writing prose on my behalf, use the my-voice skill.
