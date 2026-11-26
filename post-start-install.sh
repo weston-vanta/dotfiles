@@ -5,12 +5,15 @@
 # mount so they are shared across environments.
 #
 # Having this hook replaces the environment's default shared-storage hook, so
-# it covers everything that one shares.
+# it covers everything that one shares. It also starts any missing wt bases
+# (wt-bases.sh), which needs no mount.
 
 set -euo pipefail
 
 DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EFS="${EFS_MOUNT_POINT:-}"
+
+"$DOTFILES_DIR/wt-bases.sh" || echo "wt base setup failed"
 
 if [[ -z "$EFS" || "$EFS" == "$HOME" ]] || ! mountpoint -q "$EFS"; then
   echo "EFS is not mounted beside the home directory, skipping shared links"

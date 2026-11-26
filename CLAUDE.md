@@ -23,6 +23,8 @@ It then runs `install-scripts/*.zsh`, which install Neovim, herdr, and googlewor
 
 On cloud dev environments with a shared network mount at `$EFS_MOUNT_POINT`, `post-start-install.sh` runs after the mount is set up. It replaces the paths listed at the top of the script with symlinks into the mount so they persist across environments, then re-links the agent config into the shared `~/.claude`. Only paths belong in this repo, never the mount's contents.
 
+Before that, with or without the mount, `post-start-install.sh` runs `wt-bases.sh`, which gives each repo in its `WT_BASES` table (repo path → `wt.warm` commands) that is checked out a wt base: it sets `wt.warm` and, when the base is missing or half-built, runs `wt base-init` in the background, logging to `~/.cache/wt/base-init-<repo>.log`.
+
 `.config/herdr/` is the one `.config` entry linked file-by-file rather than as a
 directory, because `~/.config/herdr/` also holds sockets, logs, session state, and
 built plugins. Only `config.toml` belongs in this repo.
