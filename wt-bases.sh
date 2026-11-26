@@ -29,8 +29,9 @@ for repo in "${!WT_BASES[@]}"; do
   log="$HOME/.cache/wt/base-init-$(basename "$repo").log"
   mkdir -p "$(dirname "$log")"
   # The lock skips the build while an earlier post-start is still running one.
-  # shellcheck disable=SC2016  # expanded by the inner bash
-  setsid flock -n "$log.lock" bash -c '
+  # zsh reads ~/.zshenv, so `just` and the shared pnpm store match a user's shell.
+  # shellcheck disable=SC2016  # expanded by the inner zsh
+  setsid flock -n "$log.lock" zsh -c '
     exec >"$3" 2>&1
     if [[ -e "$2.wt/.base" ]]; then "$1" --repo "$2" base-remove --force; fi
     "$1" --repo "$2" base-init
